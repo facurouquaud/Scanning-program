@@ -244,6 +244,15 @@ class FrontEnd(QMainWindow):
         self.line_profile_button.clicked.connect(self.toggle_line_profile)
         self.line_profile_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         buttons_layout.addWidget(self.line_profile_button)
+        
+        # Save image button
+        self.save_image_button = QPushButton("Save Image")
+        self.save_image_button.setCheckable(True)
+        self.save_image_button.clicked.connect(self.toggle_save_image)
+        self.save_image_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        buttons_layout.addWidget(self.save_image_button)
+        # self.save_button.clicked.connect(self.save_image)
+        # grid_layout.addWidget(self.save_button, 8, 2, 1, 2)
 
         # Create a PyQtGraph GraphicsLayoutWidget
         self.graphics_layout = pg.GraphicsLayoutWidget()
@@ -389,6 +398,8 @@ class FrontEnd(QMainWindow):
         self.apply_roi_button = QPushButton("Apply ROI Selection")
         self.apply_roi_button.clicked.connect(self.request_restart)
         grid_layout.addWidget(self.apply_roi_button, 3, 2)
+        
+       
 
         # Connect textChanged signals -> unckeck save scan data checkbox
         self.x_range_input.textChanged.connect(self.changed_px_size)
@@ -536,6 +547,70 @@ class FrontEnd(QMainWindow):
             le.setText(f"{coord:.3f}")
 
         self.update_parameters()
+    def toggle_save_image(self, checked):
+        """Handle save image button toggle state."""
+        if checked:
+            # Mostrar diálogo de guardado
+            success = self.save_image_dialog()
+            
+            # Desactivar el botón independientemente del resultado
+            self.save_image_button.setChecked(False)
+            
+            # Mostrar feedback al usuario
+            if success:
+                QMessageBox.information(self, "Success", "Image saved successfully!")
+            else:
+                QMessageBox.warning(self, "Cancelled", "Image was not saved.")
+
+    def save_image_dialog(self):
+        """Show save dialog and handle image saving."""
+        if self.last_frame is None:
+            QMessageBox.warning(self, "No Data", "No scan data available to save.")
+            return False
+    
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"scan_{timestamp}.png"
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Scan Image",
+            default_name,
+            "PNG Images (*.png);;TIFF Images (*.tif *.tiff);;All Files (*)"
+        )
+        
+        if not filename:
+            return False
+        
+        try:
+            # Normalizar y guardar
+            image = Image.fromarray(self.normalize_image(self.last_frame))
+            
+            # Asegurar extensión correcta
+            if not filename.lower().endswith(('.png', '.tif', '.tiff')):
+                filename += '.png'
+                
+            image.save(filename)
+            logging.info(f"Image saved to {filename}")
+            return True
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save image:\n{str(e)}")
+            logging.error(f"Image save failed: {e}")
+            return False
+    def normalize_image(self, data: np.ndarray) -> np.ndarray:
+        """Normalize image data to 8-bit format."""
+        if data.dtype != np.uint8:
+            # Escalar a 0-255
+            data_min = np.min(data)
+            data_max = np.max(data)
+            
+            if data_max - data_min > 1e-6:  # Evitar división por cero
+                normalized = (data - data_min) / (data_max - data_min) * 255
+            else:
+                normalized = np.zeros_like(data) * 255
+                
+            return normalized.astype(np.uint8)
+        return data
 
     def move_to_position(self):
         """Sets the center position according to text boxes."""
@@ -700,6 +775,7 @@ class FrontEnd(QMainWindow):
         if line_number == self._scan_params.true_px_num - 1:
             frame = np.copy(self.imagen)
             self.last_frame = frame
+            # self.last_frame = self.normalize_image(self.imagen)
             self._map_window.add_region(
             frame,
             self._scan_params.line_length_y,
