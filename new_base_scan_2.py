@@ -198,9 +198,11 @@ class _NIDAQScanThread(threading.Thread):
         """Main scanning loop."""
         last_line_last_pixel = None  # Último píxel de la línea anterior
         processed_data = []  # Almacenamiento para datos procesados (opcional)
-        
+        # Precompute flyback samples
+        flyback_samples = self.total_samples - (self.n_lines * self.samples_per_line)
         try:
             self._scanning = True
+            frame_count = 0
             while not self._stop_event.is_set() and self._scanning:
                 # Create XY signal stack
                 xy_signal = np.vstack((self.volt_y, self.volt_x))
@@ -237,9 +239,9 @@ class _NIDAQScanThread(threading.Thread):
                         samps_per_chan=self.total_samples
                     )
     
-                 #    ci_task.triggers.start_trigger.cfg_dig_edge_start_trig(
-                 #    trigger_source=f"/{self.config.device_name}/ao/StartTrigger"
-                 # )
+                  #   ci_task.triggers.start_trigger.cfg_dig_edge_start_trig(
+                  #       trigger_source=f"/{self.config.device_name}/ao/StartTrigger"
+                  # )
                 
                 # #     # --- SYNC FIX 2: Tamaño de búfer para CI ---
                 #     ci_task.in_stream.input_buf_size = self.total_samples * 2  
@@ -253,12 +255,9 @@ class _NIDAQScanThread(threading.Thread):
                  #   writer.write_many_sample(xy_signal)
                   #  writer.write_many_sample(xy_signal)
                     # ci_task.start()  
-                    ao_task.start()                
-                    time.sleep(0.02)
-     
-                    print(number_of_samples_written_y)
-                    print(self.total_samples)
                     ci_task.start()
+                    ao_task.start()                
+
         
                     # Process line by line
                     for line_idx, (start, end) in enumerate(self.line_indices):
@@ -344,15 +343,36 @@ class _NIDAQScanThread(threading.Thread):
                             logging.error(f"Error inesperado en línea {line_idx}: {e}")
                             self._stop_event.set()
                             break
-        
-                    if not self._stop_event.is_set():
-                        logging.info("Scan completed successfully")
-                    else:
-                        logging.info("Scan was interrupted")
+                    # Read and discard flyback samples at end of frame
+                    if flyback_samples > 0 and not self._stop_event.is_set():
+                         try:
+                             ci_task.read(
+                                 number_of_samples_per_channel=flyback_samples
+                             )
+                         except Exception as e:
+                             logging.warning(f"Flyback read skipped: {e}")
+         
+                    #End of frame
+                    frame_count += 1
+                    logging.info(f"Completed frame {frame_count}")
+                    
+                    # Reset for next frame
+                    last_line_last_pixel = None
+            
+                    
+        except Exception as e:
+            logging.error(f"Critical scan error: {e}")
+            self._error_occurred = True
+            self._scanning = False
         
         finally:
-            if self._error_occurred:
-                logging.error("Scan terminated with errors")
+          # self._cleanup_tasks()
+          if not self._error_occurred and not self._stop_event.is_set():
+              logging.info("Scan completed successfully")
+          elif self._stop_event.is_set():
+           logging.info("Scan was interrupted")
+          else:
+              logging.error("Scan terminated with errors")
 
     
     def stop(self):
@@ -622,8 +642,9 @@ class NIDAQScan(BaseScan):
         t2 = t_rel[mask2] - t_half
         v_x = a_x * t_half
         v_y = a_y * t_half
-        x_back[mask2] = (x_0 + 0.5 * s_x * a_x * t_half**2 +
-                         s_x * v_x * t2 - 0.5 * s_x * a_x * t2**2)
+        # x_back[mask2] = (x_0 + 0.5 * s_x * a_x * t_half**2 +
+                         # s_x * v_x * t2 - 0.5 * s_x * a_x * t2**2)
+        x_back = np.full_like(t, x_0)
         y_back[mask2] = (y_0 + 0.5 * s_y * a_y * t_half**2 +
                          s_y * v_y * t2 - 0.5 * s_y * a_y * t2**2)
         
