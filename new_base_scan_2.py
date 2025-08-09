@@ -551,11 +551,13 @@ class NIDAQScan(BaseScan):
 
     def _create_scan_thread(self) -> _NIDAQScanThread:
         """Create and configure scan thread with voltage clamping."""
+        # Convertir todo a metros consistentemente
         params = self.scan_params
-        dwell_time = float(params.dwell_time* 1E-3)
-        px_size = float(params.pixel_size* 1E-6)
-        sx = float(params.line_length_x* 1E-6)
-        sy = float(params.line_length_y* 1E-6)
+        dwell_time = float(params.dwell_time * 1E-3)  # ms -> s
+        px_size = float(params.pixel_size * 1E-6)     # µm -> m
+        sx = float(params.line_length_x * 1E-6)       # µm -> m
+        sy = float(params.line_length_y * 1E-6)       # µm -> m
+        start_y = float(params.start_point[1] * 1E-6) # µm -> m
        
         required_sample_rate = 1.0 / (dwell_time)
     
@@ -579,9 +581,10 @@ class NIDAQScan(BaseScan):
             n_lines = int(sx / px_size)
         # Generar trayectorias
         t, volt_x, volt_y, samples_per_line = self.escaneo2D_back(
-            n_lines, x0, params.start_point[1], dwell_time, n_px_acc, true_px, acc, v_f
+            n_lines, x0, start_y, dwell_time, n_px_acc, true_px, acc, v_f,px_size
         )
         volt_x *= 1E6
+        volt_y *= 1E6
        
         print(n_px_acc)
         # Registrar información de trayectoria
@@ -603,56 +606,51 @@ class NIDAQScan(BaseScan):
             config=thread_config
         )
 
-    # def finish_scan(self, t_0: float, x_0: float, y_0: float,
-    #               x_f: float, y_f: float, dwell_time: float,
-    #               a_max_x: float, a_max_y: float) -> Tuple:
-    #     """Generate flyback trajectory."""
-    #     dx = abs(x_f - x_0)
-    #     dy = abs(y_f - y_0)
-    #     t_x = 2 * np.sqrt(dx / a_max_x)
-    #     t_y = 2 * np.sqrt(dy / a_max_y)
+    def finish_scan(self, t_0: float, x_0: float, y_0: float,
+                  x_f: float, y_f: float, dwell_time: float,
+                  a_max_x: float, a_max_y: float) -> Tuple:
+        """Generate flyback trajectory."""
+        dx = abs(x_f - x_0)
+        dy = abs(y_f- y_0)
+        t_x = 2 * np.sqrt(dx / a_max_x)
+        t_y = 2 * np.sqrt(dy / a_max_y)
         
-    #     if t_x >= t_y:
-    #         t_total = t_x
-    #         a_x = a_max_x
-    #         a_y = 4 * dy / (t_total ** 2)
-    #     else:
-    #         t_total = t_y
-    #         a_y = a_max_y
-    #         a_x = 4 * dx / (t_total ** 2)
+        a_x = a_max_x
+        a_y = a_max_y
+        t_total = max(t_x, t_y)
         
-    #     t_end = t_total + t_0
-    #     t = np.arange(t_0, t_end + dwell_time, dwell_time)
-    #     n_points = len(t)
-    #     t_half = t_total / 2
-    #     x_back = np.zeros(n_points)
-    #     y_back = np.zeros(n_points)
-    #     s_x = np.sign(x_f - x_0)
-    #     s_y = np.sign(y_f - y_0)
-    #     t_rel = t - t_0
+        t_end = t_total + t_0
+        t = np.arange(t_0, t_end + dwell_time, dwell_time)
+        n_points = len(t)
+        t_half = t_total / 2
+        x_back = np.zeros(n_points)
+        y_back = np.zeros(n_points)
+        s_x = 1 if x_f > x_0 else -1
+        s_y = 1 if y_f > y_0 else -1
+        t_rel = t - t_0
         
-    #     # First half of movement
-    #     mask1 = t_rel < t_half
-    #     t1 = t_rel[mask1]
-    #     x_back[mask1] = x_0 + 0.5 * s_x * a_x * t1**2
-    #     y_back[mask1] = y_0 + 0.5 * s_y * a_y * t1**2
+        # First half of movement
+        mask1 = t_rel < t_half
+        t1 = t_rel[mask1]
+        x_back[mask1] = x_0 + 0.5 * s_x * a_x * t1**2
+        y_back[mask1] = y_0 + 0.5 * s_y * a_y * t1**2
         
-    #     # Second half of movement
-    #     mask2 = t_rel >= t_half
-    #     t2 = t_rel[mask2] - t_half
-    #     v_x = a_x * t_half
-    #     v_y = a_y * t_half
-    #     # x_back[mask2] = (x_0 + 0.5 * s_x * a_x * t_half**2 +
-    #                      # s_x * v_x * t2 - 0.5 * s_x * a_x * t2**2)
-    #     x_back = np.full_like(t, x_0)
-    #     y_back[mask2] = (y_0 + 0.5 * s_y * a_y * t_half**2 +
-    #                      s_y * v_y * t2 - 0.5 * s_y * a_y * t2**2)
+        # Second half of movement
+        mask2 = t_rel >= t_half
+        t2 = t_rel[mask2] - t_half
+        v_x = a_x * t_half
+        v_y = a_y * t_half
+        # x_back[mask2] = (x_0 + 0.5 * s_x * a_x * t_half**2 +
+                          # s_x * v_x * t2 - 0.5 * s_x * a_x * t2**2)
+        x_back = np.full_like(t, x_0)
+        y_back[mask2] = (y_0 + 0.5 * s_y * a_y * t_half**2 +
+                          s_y * v_y * t2 - 0.5 * s_y * a_y * t2**2)
         
-    #     return t, x_back, y_back, n_points
+        return t, x_back, y_back, n_points
 
     def escaneo2D_back(self, n_lines: int, x_0: float, y_0: float,
                      dwell_time: float, n_pix_acc: int, n_pix: int,
-                     acc: float, v_f: float):
+                     acc: float, v_f: float,px_size):
         if n_pix_acc <= 0 or n_pix <= 0:
             raise ValueError("n_pix_acc and n_pix must be positive")
         
@@ -708,7 +706,7 @@ class NIDAQScan(BaseScan):
         x_total = np.tile(x, n_lines)
         # x_total -= (x_total.max() + x_total.min()) / 2
 
-        y_step = self.scan_params.pixel_size
+        y_step =  px_size
         y_shifts = y_0 + np.arange(n_lines) * y_step
         y_offsets = np.repeat(y_shifts, num_points)
         # y_total = np.tile(np.ones_like(y)*y_0, n_lines) + y_offsets
@@ -724,54 +722,24 @@ class NIDAQScan(BaseScan):
         last_y = y_total[-1]
         last_t = t_total[-1]
         
-        # Configuración del perfil de retorno en Y (corregido)
-        t_half_line_duration = t_line_duration / 2
-        n_half_points = int(t_half_line_duration / dwell_time)
-        t_back = last_t + np.arange(1, n_half_points + 1) * dwell_time
-        
-        # Tiempo relativo para el retorno
-        t_rel = np.arange(0, t_half_line_duration, dwell_time)
-        idx_pix_half = np.arange(len(t_rel))
-        
-        # Parámetros clave (corrección: eliminar x_0 en cálculos de Y)
-        t_acc = n_pix_acc * dwell_time
-        v_y = v_f
-        sgn = 1.0 if y_0 > last_y else -1.0
-        a_y = sgn * acc
-        
-        # Inicializar arrays de retorno
-        x_back = np.full(n_half_points, last_x)
-        y_back = np.zeros(n_half_points)
-        
-        # 1. Aceleración inicial (fase 1)
-        mask1 = idx_pix_half < n_pix_acc
-        t1 = idx_pix_half[mask1] * dwell_time
-        y_back[mask1] = last_y + 0.5 * a_y * t1**2  # Corregido: sin x_0
-        
-        # 2. Velocidad constante (fase 2)
-        mask2 = (idx_pix_half >= n_pix_acc) & (idx_pix_half < n_pix_acc + n_pix)
-        t2 = (idx_pix_half[mask2] - n_pix_acc) * dwell_time
-        y_acc_end = last_y + 0.5 * a_y * t_acc**2  # Corregido: sin x_0
-        y_back[mask2] = y_acc_end + v_y * t2
-        
-        # 3. Desaceleración (fase 3)
-        mask3 = idx_pix_half >= n_pix_acc + n_pix
-        t3 = (idx_pix_half[mask3] - (n_pix_acc + n_pix)) * dwell_time
-        y_const_end = y_acc_end + v_y * (n_pix * dwell_time)
-        y_back[mask3] = y_const_end + v_y * t3 - 0.5 * a_y * t3**2
+      
         
         # Garantizar que el último punto sea exactamente y_0
         
-        # Concatenar el retorno
+        t_back, x_back, y_back,_ = self.finish_scan(last_t, last_x, last_y, x_0, y_0,dwell_time, acc, acc)
+
+        # Concatenar la vuelta
         t_total = np.concatenate([t_total, t_back])
         x_total = np.concatenate([x_total, x_back])
         y_total = np.concatenate([y_total, y_back])
-        # Ajustes finales de centrado
         y_total -= (y_total.max() + y_total.min()) / 2
+        # y_total[-num_points:] = y_total[-num_points]
         x_total -= (x_total.max() + x_total.min()) / 2
-        
-        # Eliminados ajustes de centrado que causaban desplazamiento
+
+
         return t_total, x_total, y_total, int(n_points)
+        
+      
 
     def get_data_shape(self) -> Tuple[int, int]:
         """Get scan data dimensions."""
