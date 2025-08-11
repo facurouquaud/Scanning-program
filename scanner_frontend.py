@@ -177,7 +177,7 @@ class FrontEnd(QMainWindow):
         self._scan_params = None
 
         # Center position (x, y, z)
-        self._center = np.array((10., 10., 3.,), dtype=np.float64)
+        self._center = np.array((0., 0., 3.,), dtype=np.float64)
 
         # Create dockable windows and UI components
         self.create_dock_widgets()
@@ -810,8 +810,8 @@ class FrontEnd(QMainWindow):
                            p, s in zip(self._scan_params.start_point, crop)]
             self._ROI.setPos(shifted_pos, update=False)
             self._ROI.setSize(
-                (self._scan_params.line_length_x * 3/4,
-                 self._scan_params.line_length_y * 3/4),
+                (self._scan_params.line_length_x ,
+                 self._scan_params.line_length_y ),
                 update=True,
             )
             self._ROI.show()

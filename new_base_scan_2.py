@@ -75,34 +75,35 @@ class BaseScan(ABC):
 class _NIDAQScanThread(threading.Thread):
     """Thread for NIDAQ scanning operations."""
     
-    def __init__(self,
-                 params: scan_parameters.RegionScanParameters,
-                 line_callbacks: List[ScanCallback],
-                 volt_x: np.ndarray,
-                 volt_y: np.ndarray,
-                 t: np.ndarray,
-                 true_px: int,
-                 n_px_acc: int,
-                 samples_per_line: int,
-                 n_lines: int,
-                 config: ScannerConfig,
+    def __init__(self, params, line_callbacks,volt_x, volt_y,x_rel, y_rel, samples_per_line: int,
+                 total_samples: int,total_center_samples, line_indices: List[Tuple[int,int]],
+                 true_px: int, n_px_acc: int, n_lines: int, config: ScannerConfig,
                  *args, **kwargs):
+
+                  
         super().__init__(*args, **kwargs)
         self.scan_params = params
         self._line_callbacks = line_callbacks
         self._stop_event = threading.Event()
         self._error_occurred = False
         self.n_px_acc = n_px_acc
+        self.volt_x = volt_x
+        self.volt_y = volt_y
+        self.x_rel = x_rel
+        self.y_rel = y_rel
         self.true_px = true_px
+     
+        
+        
         print(self.true_px)
         # Convert position to voltage (safe copy)
       
 
         # Validate voltage ranges
         max_physical = config.max_voltage / config.um_to_volts
-        self.volt_x = np.clip(volt_x.copy(), -max_physical, max_physical) * config.um_to_volts
-        self.volt_y = np.clip(volt_y.copy(), -max_physical, max_physical) * config.um_to_volts
-        self.t = t
+        # self.volt_x = np.clip(volt_x.copy(), -max_physical, max_physical) * config.um_to_volts
+        # self.volt_y = np.clip(volt_y.copy(), -max_physical, max_physical) * config.um_to_volts
+        # self.t = t
         
         self._validate_voltage(config.max_voltage)
 
@@ -118,44 +119,32 @@ class _NIDAQScanThread(threading.Thread):
         self.n_lines = n_lines
         self.config = config
         self.total_samples = len(self.volt_x)
-        
+        self.total_center_samples =  total_center_samples
         # Pre-calculate line indices
         self.line_indices = [
             (i * samples_per_line, (i + 1) * samples_per_line)
             for i in range(n_lines)
         ]
-        def muestra_escaneo(N,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
-            fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
-            ax1.scatter(t, x,s = 8, color ="black")
-            ax1.set_ylabel("Posición X [V]")
-            ax1.set_title(f"Trayectoria de {N} líneas de escaneo en x e y")
-            ax1.grid(True)
-            ax2.scatter(t, y,s = 8, color="black")
-            ax2.set_ylabel("Posición Y [V]")
-            ax2.set_xlabel("Tiempo [us]")
-            ax2.grid(True)
-            plt.tight_layout()
-            plt.show()
-        muestra_escaneo(n_lines, self.t, self.volt_x, self.volt_y)
+  
 
     def _validate_voltage(self, max_voltage: float):
-       """Ensure voltages are within DAQ limits with detailed logging."""
-       x_min = np.min(self.volt_x)
-       x_max = np.max(self.volt_x)
-       y_min = np.min(self.volt_y)
-       y_max = np.max(self.volt_y)
+        """Ensure voltages are within DAQ limits with detailed logging."""
+        x_min = np.min(self.volt_x)
+        x_max = np.max(self.volt_x)
+        y_min = np.min(self.volt_y)
+        y_max = np.max(self.volt_y)
        
-       if x_max > max_voltage or x_min < -max_voltage:
-           logging.error(f"X voltage out of range: min={x_min:.2f}V, max={x_max:.2f}V, "
-                         f"allowed=±{max_voltage}V")
-           raise ValueError(f"X voltage out of range: {x_min:.2f}V to {x_max:.2f}V")
+        if x_max > max_voltage or x_min < -max_voltage:
+            logging.error(f"X voltage out of range: min={x_min:.2f}V, max={x_max:.2f}V, "
+                          f"allowed=±{max_voltage}V")
+            raise ValueError(f"X voltage out of range: {x_min:.2f}V to {x_max:.2f}V")
        
-       if y_max > max_voltage or y_min < -max_voltage:
-           logging.error(f"Y voltage out of range: min={y_min:.2f}V, max={y_max:.2f}V, "
-                         f"allowed=±{max_voltage}V")
-           raise ValueError(f"Y voltage out of range: {y_min:.2f}V to {y_max:.2f}V")
+        if y_max > max_voltage or y_min < -max_voltage:
+            logging.error(f"Y voltage out of range: min={y_min:.2f}V, max={y_max:.2f}V, "
+                          f"allowed=±{max_voltage}V")
+            raise ValueError(f"Y voltage out of range: {y_min:.2f}V to {y_max:.2f}V")
        
-       logging.info(f"Voltage ranges validated: X({x_min:.2f}V to {x_max:.2f}V), "
+        logging.info(f"Voltage ranges validated: X({x_min:.2f}V to {x_max:.2f}V), "
                     f"Y({y_min:.2f}V to {y_max:.2f}V)")
 
     def pixel_filter(self, line: np.ndarray, n_pix: int, n_pix_acc: int):
@@ -196,94 +185,124 @@ class _NIDAQScanThread(threading.Thread):
 
     def run(self):
         """Main scanning loop."""
-        last_line_last_pixel = None  # Último píxel de la línea anterior
-        processed_data = []  # Almacenamiento para datos procesados (opcional)
-        # Precompute flyback samples
-        flyback_samples = self.total_samples - (self.n_lines * self.samples_per_line)
+        last_line_last_pixel = None
+        processed_data = []
+        
+        # Precompute center and flyback samples as integers
+        center_samples = int(round(self.total_center_samples))
+        flyback_samples = self.total_samples - center_samples - (self.n_lines * self.samples_per_line)
+        
+        # Ensure flyback_samples is non-negative
+        flyback_samples = max(0, flyback_samples)
+        
+        # AO-only relocation
+        if self.x_rel is not None:
+            try:
+                xy_center_signal = np.vstack((self.y_rel, self.x_rel))
+                with nidaqmx.Task() as ao_task:
+                    ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao1", name_to_assign_to_channel="Y")
+                    ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao0", name_to_assign_to_channel="X")
+                    samps_rel = max(2, center_samples)
+                    ao_task.timing.cfg_samp_clk_timing(
+                        rate=self.config.sample_rate,
+                        sample_mode=AcquisitionType.FINITE,
+                        samps_per_chan=samps_rel
+                    )
+                    writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
+                    writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
+                    writer.write_many_sample(xy_center_signal)
+                    ao_task.start()
+                    logging.info("Relocación completada (AO-only).")
+            except Exception as e:
+                logging.warning(f"Relocación falló o expiró: {e}")
+    
         try:
             self._scanning = True
             frame_count = 0
+            
             while not self._stop_event.is_set() and self._scanning:
-                # Create XY signal stack
                 xy_signal = np.vstack((self.volt_y, self.volt_x))
-        
+                
                 with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
                     # Configure analog output
                     ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao1", name_to_assign_to_channel="Y")
                     ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao0", name_to_assign_to_channel="X")
-                    #marker 
+                    
+                    # Export sample clock for synchronization
                     ao_task.export_signals.export_signal(
                         signal_id=nidaqmx.constants.Signal.SAMPLE_CLOCK,
-                        output_terminal="/Dev1/PFI0")
-    
-                    # Configure timing
+                        output_terminal="/Dev1/PFI0"
+                    )
+                    
+                    # Configure AO timing
                     ao_task.timing.cfg_samp_clk_timing(
                         rate=self.config.sample_rate,
                         sample_mode=AcquisitionType.FINITE,
                         samps_per_chan=self.total_samples
                     )
-    
-                   
-    
+                    
                     # Configure counter input
                     ci_task.ci_channels.add_ci_count_edges_chan(
                         f"{self.config.device_name}/{self.config.ci_channel}",
                         edge=Edge.RISING
                     )
-    
+                    
                     # Sync CI with AO sample clock
                     ci_task.timing.cfg_samp_clk_timing(
                         rate=self.config.sample_rate,
                         source=f"/{self.config.device_name}/ao/SampleClock",
                         sample_mode=AcquisitionType.FINITE,
-                        samps_per_chan=self.total_samples
+                        samps_per_chan=self.total_samples + self.total_center_samples
                     )
-    
-                  #   ci_task.triggers.start_trigger.cfg_dig_edge_start_trig(
-                  #       trigger_source=f"/{self.config.device_name}/ao/StartTrigger"
-                  # )
-                
-                # #     # --- SYNC FIX 2: Tamaño de búfer para CI ---
-                #     ci_task.in_stream.input_buf_size = self.total_samples * 2  
                     
-                
-        
-    
-                    # Write and start analog output
-                    writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
-                    number_of_samples_written_y = ao_task.write(xy_signal, auto_start=False)
-                 #   writer.write_many_sample(xy_signal)
-                  #  writer.write_many_sample(xy_signal)
-                    # ci_task.start()  
+               
+                    
+                    # Start tasks - CI first then AO
                     ci_task.start()
-                    ao_task.start()                
+                    time.sleep(0.02)
 
-        
+                    ao_task.start()
+                    # ao_task.write(xy_signal, auto_start=True)
+                    
+                    # Read and discard center samples at start of frame
+                    if center_samples > 0:
+                        try:
+                            center_data = ci_task.read(
+                                number_of_samples_per_channel=center_samples,
+                                timeout=4.0
+                            )
+                        except Exception as e:
+                            logging.error(f"Error reading center samples: {e}")
+                            self._stop_event.set()
+                            continue
+                    
                     # Process line by line
                     for line_idx, (start, end) in enumerate(self.line_indices):
                         if self._stop_event.is_set():
                             logging.info("Scan stopped by user request")
                             self._scan_completed = False
                             break
-        
-                        # Read data from DAQ
+                        
+                        # Read line data
                         try:
                             line_total_data = ci_task.read(
                                 number_of_samples_per_channel=self.samples_per_line,
-                           timeout = 4 )
-                            # print(line_total_data)
+                                timeout=4.0
+                            )
+                            time.sleep(0.02)
                         except Exception as e:
-                            logging.error(f"Error al leer del DAQ en línea {line_idx}: {e}")
+                            logging.error(f"DAQ read error on line {line_idx}: {e}")
                             self._stop_event.set()
                             break
-            
-                        # Check data length
+                        
+                        # Validate data length
                         if len(line_total_data) != self.samples_per_line:
-                            logging.warning(f"Longitud incorrecta en línea {line_idx}: "
-                                          f"esperada {self.samples_per_line}, "
-                                          f"recibida {len(line_total_data)}")
+                            logging.warning(
+                                f"Line {line_idx} length mismatch: "
+                                f"expected {self.samples_per_line}, got {len(line_total_data)}"
+                            )
                             continue
-        
+                        
                         try:
                             # Process data
                             line_data_both, line_data_first, line_data_second = self.pixel_filter(
@@ -291,88 +310,69 @@ class _NIDAQScanThread(threading.Thread):
                                 self.true_px,
                                 self.n_px_acc
                             )
-        
-                            last_line = (line_idx == self.n_lines - 1)
-        
-                            # Select data according to scan mode
                             
-                            print(self.scan_params.scan_data.name)
-                            # Selecciona los datos según el modo de escaneo
+                            # Select data based on scan mode
                             if self.scan_params.scan_data.name == 'FIRST':
                                 current_line = line_data_first
                             elif self.scan_params.scan_data.name == 'SECOND':
                                 current_line = line_data_second
-                            else:  # 'BOTH' o por defecto
+                            else:  # 'BOTH'
                                 current_line = line_data_both
-                
-                            # --- PROCESAMIENTO EN TIEMPO REAL AQUÍ ---
-                            # 1. Normalización entre líneas
-                            if last_line_last_pixel is not None:
-                                normalized_line = current_line - last_line_last_pixel
-                            else:
-                                normalized_line = current_line  # Primera línea sin normalizar
                             
-                            # 2. Actualizar último píxel para la siguiente línea (ANTES de diferencias)
-                            last_line_last_pixel = current_line[-1]
+                            # Real-time processing
+                            normalized_line = current_line if last_line_last_pixel is None \
+                                else current_line - last_line_last_pixel
                             
-                            # 3. Diferencias intrapíxel
-                            diff_line = np.insert(np.diff(normalized_line), 0, 0)  # Insertar 0 al comienzo para mantener el largo
+                            last_line_last_pixel = current_line[-1]  # Update for next line
                             
-                            # --- FIN DEL PROCESAMIENTO ---
-                            processed_line = diff_line  # Usar esta línea procesada
-                            print(len(processed_line))
+                            diff_line = np.insert(np.diff(normalized_line), 0, 0)
+                            processed_line = diff_line
                             
-                            # Almacenar para visualización completa (opcional)
+                            # Store for visualization
                             processed_data.append(processed_line)
                             
                             last_line = (line_idx == self.n_lines - 1)
-                                                    
-                            # Enviar datos procesados a los callbacks
+                            
+                            # Send to callbacks
                             for callback in self._line_callbacks:
                                 try:
-                                    should_stop = callback(processed_line, line_idx, last_line)
-                                    if should_stop:
+                                    if callback(processed_line, line_idx, last_line):
                                         self._stop_event.set()
                                 except Exception as e:
-                                    logging.error(f"Error en callback para línea {line_idx}: {e}")
-        
-                        except ValueError as e:
-                            logging.error(f"Error al procesar línea {line_idx}: {e}")
-                            continue
+                                    logging.error(f"Callback error on line {line_idx}: {e}")
+                        
                         except Exception as e:
-                            logging.error(f"Error inesperado en línea {line_idx}: {e}")
+                            logging.error(f"Processing error on line {line_idx}: {e}")
                             self._stop_event.set()
                             break
+                    
                     # Read and discard flyback samples at end of frame
                     if flyback_samples > 0 and not self._stop_event.is_set():
-                         try:
-                             ci_task.read(
-                                 number_of_samples_per_channel=flyback_samples
-                             )
-                         except Exception as e:
-                             logging.warning(f"Flyback read skipped: {e}")
-         
-                    #End of frame
-                    frame_count += 1
-                    logging.info(f"Completed frame {frame_count}")
-                    
-                    # Reset for next frame
-                    last_line_last_pixel = None
-            
-                    
+                        try:
+                            ci_task.read(
+                                number_of_samples_per_channel=flyback_samples,
+                                timeout=2.0
+                            )
+                        except Exception as e:
+                            logging.warning(f"Flyback read skipped: {e}")
+                
+                # End of frame processing
+                frame_count += 1
+                logging.info(f"Completed frame {frame_count}")
+                last_line_last_pixel = None  # Reset for next frame
+        
         except Exception as e:
-            logging.error(f"Critical scan error: {e}")
+            logging.error(f"Critical scan error: {e}", exc_info=True)
             self._error_occurred = True
             self._scanning = False
         
         finally:
-          # self._cleanup_tasks()
-          if not self._error_occurred and not self._stop_event.is_set():
-              logging.info("Scan completed successfully")
-          elif self._stop_event.is_set():
-           logging.info("Scan was interrupted")
-          else:
-              logging.error("Scan terminated with errors")
+            if not self._error_occurred and not self._stop_event.is_set():
+                logging.info("Scan completed successfully")
+            elif self._stop_event.is_set():
+                logging.info("Scan was interrupted")
+            else:
+                logging.error("Scan terminated with errors")
 
     
     def stop(self):
@@ -583,28 +583,93 @@ class NIDAQScan(BaseScan):
         t, volt_x, volt_y, samples_per_line = self.escaneo2D_back(
             n_lines, x0, start_y, dwell_time, n_px_acc, true_px, acc, v_f,px_size
         )
-        volt_x *= 1E6
-        volt_y *= 1E6
-       
-        print(n_px_acc)
+
+
+        
+        # generar relocation solo si hay center en params
+        center = getattr(params, "center", None)
+        reloc_signal = None
+        if center is not None:
+            t_rel, x_rel_um, y_rel_um, n_rel = self.move_to_center_scan(0.0, volt_x[int(len(volt_x)/2)], volt_y[int(len(volt_y)/2)],
+                                                          center[0], center[1],
+                                                          dwell_time,
+                                                          a_max_x=acc, a_max_y=acc)
+           
+            x_rel_v = x_rel_um* self.config.um_to_volts
+            y_rel_v = y_rel_um* self.config.um_to_volts
+            if x_rel_v.size < 2 or y_rel_v.size <2:
+                 # repetir el último valor para obtener 2 puntos (o saltar la reloc si preferís)
+                 x_rel_v = np.repeat(x_rel_v, 2)
+                 y_rel_v = np.repeat(y_rel_v, 2)
+
+            # clip por seguridad
+            x_rel_v = np.clip(x_rel_v, -self.config.max_voltage, self.config.max_voltage)
+            y_rel_v = np.clip(y_rel_v, -self.config.max_voltage, self.config.max_voltage)
+           
+           
+        
+        # convertir a V
+        volt_x = volt_x * self.config.um_to_volts*1E6
+        volt_y = volt_y* self.config.um_to_volts*1E6
+        # preparar señal XY completa para escribir (Y, X) y total_samples
+        total_samples = len(volt_x)
+        total_center_samples = len(x_rel_v)
+        
+        # construir line_indices igual que antes
+        line_indices = [(i * samples_per_line, (i + 1) * samples_per_line) for i in range(n_lines)]
         # Registrar información de trayectoria
         logging.info(f"Generated trajectory: "
                     f"X range: {np.min(volt_x):.2f} to {np.max(volt_x):.2f} µm, "
                     f"Y range: {np.min(volt_y):.2f} to {np.max(volt_y):.2f} µm, "
                     f"Samples: {len(volt_x)}, Lines: {n_lines}")
-        
-        # Crear y retornar thread
-        return _NIDAQScanThread( params = params,
+        def muestra_escaneo(N,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+            fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
+            ax1.scatter(t, x,s = 8, color ="black")
+            ax1.set_ylabel("Posición X [V]")
+            ax1.set_title(f"Trayectoria de {N} líneas de escaneo en x e y")
+            ax1.grid(True)
+            ax2.scatter(t, y,s = 8, color="black")
+            ax2.set_ylabel("Posición Y [V]")
+            ax2.set_xlabel("Tiempo [us]")
+            ax2.grid(True)
+            plt.tight_layout()
+            plt.show()
+        muestra_escaneo(n_lines, t, volt_x, volt_y)
+        muestra_escaneo(1,t_rel,x_rel_v,y_rel_v)
+        # devolver/crear thread pasando solo señales ya procesadas:
+        return _NIDAQScanThread(
+            params=params,
             line_callbacks=self._line_callbacks,
-            volt_x=volt_x,
-            volt_y=volt_y,
-            t = t,
+            volt_x = volt_x,
+            volt_y = volt_y,
+            x_rel = x_rel_v,
+            y_rel = y_rel_v,
+            samples_per_line=samples_per_line,
+            total_samples=total_samples,
+            line_indices=line_indices,
+            total_center_samples =  total_center_samples,
             true_px=true_px,
             n_px_acc=n_px_acc,
-            samples_per_line=samples_per_line,
             n_lines=n_lines,
             config=thread_config
         )
+       
+        print(n_px_acc)
+  
+        # # Crear y retornar thread
+        # return _NIDAQScanThread( params = params,
+        #     line_callbacks=self._line_callbacks,
+        #     moving_center_func=self.finish_scan,
+        #     volt_x=volt_x,
+        #     volt_y=volt_y,
+        #     t = t,
+        #     acc_um_s2 = acc * 1e6,
+        #     true_px=true_px,
+        #     n_px_acc=n_px_acc,
+        #     samples_per_line=samples_per_line,
+        #     n_lines=n_lines,
+        #     config=thread_config
+        # )
 
     def finish_scan(self, t_0: float, x_0: float, y_0: float,
                   x_f: float, y_f: float, dwell_time: float,
@@ -638,14 +703,89 @@ class NIDAQScan(BaseScan):
         # Second half of movement
         mask2 = t_rel >= t_half
         t2 = t_rel[mask2] - t_half
-        v_x = a_x * t_half
         v_y = a_y * t_half
-        # x_back[mask2] = (x_0 + 0.5 * s_x * a_x * t_half**2 +
-                          # s_x * v_x * t2 - 0.5 * s_x * a_x * t2**2)
+        
         x_back = np.full_like(t, x_0)
+        
         y_back[mask2] = (y_0 + 0.5 * s_y * a_y * t_half**2 +
                           s_y * v_y * t2 - 0.5 * s_y * a_y * t2**2)
         
+        return t, x_back, y_back, n_points
+    
+    def move_to_center_scan(self, t_0: float, x_0: float, y_0: float,
+                  x_f: float, y_f: float, dwell_time: float,
+                  a_max_x: float, a_max_y: float) -> Tuple:
+        """Generate flyback trajectory."""
+        dx = abs(x_f - x_0)
+        dy = abs(y_f- y_0)
+        t_x = 2 * np.sqrt(dx / a_max_x)
+        t_y = 2 * np.sqrt(dy / a_max_y)
+        
+        a_x = a_max_x
+        a_y = a_max_y
+        t_total = max(t_x, t_y)
+        
+        t_end = t_total + t_0
+        t = np.arange(t_0, t_end + dwell_time, dwell_time)
+        n_points = len(t)
+        t_half = t_total / 2
+        t = np.asarray(t, dtype=float)
+        x_back = np.empty_like(t)
+        y_back = np.empty_like(t)
+       
+        # signos de movimiento: 0 si no hay movimiento
+        if x_f > x_0:
+            s_x = 1
+        elif x_f < x_0:
+            s_x = -1
+        else:
+            s_x = 0
+       
+        if y_f > y_0:
+            s_y = 1
+        elif y_f < y_0:
+            s_y = -1
+        else:
+            s_y = 0
+       
+        t_rel = t - t_0
+       
+        # máscaras para primera / segunda mitad
+        mask1 = t_rel < t_half
+        mask2 = ~mask1
+       
+        # --- eje X ---
+        if s_x == 0 or a_x == 0.0:
+            # no moverse en X: dejar constante
+            x_back[:] = float(x_0)
+        else:
+            t1 = t_rel[mask1]
+            x_back[mask1] = x_0 + 0.5 * s_x * a_x * t1**2
+       
+            t2 = t_rel[mask2] - t_half
+            v_x = a_x * t_half
+            x_back[mask2] = (
+                x_0 + 0.5 * s_x * a_x * t_half**2
+                + s_x * v_x * t2
+                - 0.5 * s_x * a_x * t2**2
+            )
+       
+        # --- eje Y ---
+        if s_y == 0 or a_y == 0.0:
+            # no moverse en Y: dejar constante
+            y_back[:] = float(y_0)
+        else:
+            t1 = t_rel[mask1]
+            y_back[mask1] = y_0 + 0.5 * s_y * a_y * t1**2
+       
+            t2 = t_rel[mask2] - t_half
+            v_y = a_y * t_half
+            y_back[mask2] = (
+                y_0 + 0.5 * s_y * a_y * t_half**2
+                + s_y * v_y * t2
+                - 0.5 * s_y * a_y * t2**2
+            )
+       
         return t, x_back, y_back, n_points
 
     def escaneo2D_back(self, n_lines: int, x_0: float, y_0: float,
