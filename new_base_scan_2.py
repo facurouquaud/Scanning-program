@@ -259,7 +259,7 @@ class _NIDAQScanThread(threading.Thread):
                     
                     # Start tasks - CI first then AO
                     ci_task.start()
-                    time.sleep(0.02)
+                    # time.sleep(0.2)
 
                     ao_task.start()
                     # ao_task.write(xy_signal, auto_start=True)
@@ -289,7 +289,6 @@ class _NIDAQScanThread(threading.Thread):
                                 number_of_samples_per_channel=self.samples_per_line,
                                 timeout=4.0
                             )
-                            time.sleep(0.02)
                         except Exception as e:
                             logging.error(f"DAQ read error on line {line_idx}: {e}")
                             self._stop_event.set()
@@ -398,6 +397,7 @@ class NIDAQScan(BaseScan):
         self._stop_event = threading.Event()
         self._scanning = False
         self._lock = threading.Lock()
+        self.current_position = np.array([0.0, 0.0])
         
         
     def is_scanning(self) -> bool:
@@ -508,7 +508,7 @@ class NIDAQScan(BaseScan):
             except Exception as e:
                 logging.error(f"Stop callback error: {e}")
 
-    def _calculate_parameters(self, scan_width_x: float, scan_width_y, pixel_size, dwell_time: float) -> Tuple:
+    def _calculate_parameters(self, scan_width_x: float, scan_width_y, pixel_size, dwell_time: float, n_pix) -> Tuple:
         """Calculate scanning parameters with type safety."""
         try:
             # Validar valores positivos
@@ -532,10 +532,7 @@ class NIDAQScan(BaseScan):
                 self._execute_scan_stop_callbacks()
 
                 raise ValueError("Acceleration out of range")
-            if scan_width_x > scan_width_y:
-                n_pix = int(round(scan_width_x / pixel_size))
-            else:
-                n_pix = int(round(scan_width_y / pixel_size))
+            
             if n_pix > 500:
                 self._execute_scan_stop_callbacks()
                 raise ValueError("number of pixels out of range")
@@ -558,6 +555,7 @@ class NIDAQScan(BaseScan):
         sx = float(params.line_length_x * 1E-6)       # µm -> m
         sy = float(params.line_length_y * 1E-6)       # µm -> m
         start_y = float(params.start_point[1] * 1E-6) # µm -> m
+        n_pix = int(params.true_px_num)
        
         required_sample_rate = 1.0 / (dwell_time)
     
@@ -572,7 +570,7 @@ class NIDAQScan(BaseScan):
         )
         # Calcular parámetros
         x0, true_px, n_px_acc, _, v_f, acc, _ = self._calculate_parameters(
-            sx,sy,px_size, dwell_time
+            sx,sy,px_size, dwell_time,n_pix
         )
         print(x0)
         if sy>sx:
@@ -584,28 +582,39 @@ class NIDAQScan(BaseScan):
             n_lines, x0, start_y, dwell_time, n_px_acc, true_px, acc, v_f,px_size
         )
 
-
-        
         # generar relocation solo si hay center en params
         center = getattr(params, "center", None)
         reloc_signal = None
         if center is not None:
-            t_rel, x_rel_um, y_rel_um, n_rel = self.move_to_center_scan(0.0, volt_x[int(len(volt_x)/2)], volt_y[int(len(volt_y)/2)],
-                                                          center[0], center[1],
-                                                          dwell_time,
-                                                          a_max_x=acc, a_max_y=acc)
-           
-            x_rel_v = x_rel_um* self.config.um_to_volts
-            y_rel_v = y_rel_um* self.config.um_to_volts
-            if x_rel_v.size < 2 or y_rel_v.size <2:
-                 # repetir el último valor para obtener 2 puntos (o saltar la reloc si preferís)
-                 x_rel_v = np.repeat(x_rel_v, 2)
-                 y_rel_v = np.repeat(y_rel_v, 2)
-
+            # Preferir prev_center si existe (centro anterior en µm)
+        
+            x_f_um = float(center[0])
+            y_f_um = float(center[1])
+            t_rel, x_rel_um, y_rel_um, n_rel = self.move_to_center_scan(
+            0.0, 
+            x_f_um, 
+            y_f_um,
+            dwell_time,
+            a_max_x=acc, 
+            a_max_y=acc
+                        )
+                # convertir a V (si config.um_to_volts es V/µm)
+            x_rel_v = x_rel_um * self.config.um_to_volts
+            y_rel_v = y_rel_um * self.config.um_to_volts
+            print(x_rel_v)
+            print(y_rel_v)
+            
+        
+            # asegurar al menos 2 puntos
+            if x_rel_v.size < 2:
+                x_rel_v = np.pad(x_rel_v, (0, 2 - x_rel_v.size), mode='edge')
+            if y_rel_v.size < 2:
+                y_rel_v = np.pad(y_rel_v, (0, 2 - y_rel_v.size), mode='edge')
+        
             # clip por seguridad
             x_rel_v = np.clip(x_rel_v, -self.config.max_voltage, self.config.max_voltage)
             y_rel_v = np.clip(y_rel_v, -self.config.max_voltage, self.config.max_voltage)
-           
+
            
         
         # convertir a V
@@ -634,8 +643,9 @@ class NIDAQScan(BaseScan):
             ax2.grid(True)
             plt.tight_layout()
             plt.show()
-        muestra_escaneo(n_lines, t, volt_x, volt_y)
-        muestra_escaneo(1,t_rel,x_rel_v,y_rel_v)
+        # muestra_escaneo(n_lines, t, volt_x, volt_y)
+        # if len(t_rel) > 1:
+        #     muestra_escaneo(1,t_rel,x_rel_v,y_rel_v)
         # devolver/crear thread pasando solo señales ya procesadas:
         return _NIDAQScanThread(
             params=params,
@@ -712,80 +722,75 @@ class NIDAQScan(BaseScan):
         
         return t, x_back, y_back, n_points
     
-    def move_to_center_scan(self, t_0: float, x_0: float, y_0: float,
-                  x_f: float, y_f: float, dwell_time: float,
-                  a_max_x: float, a_max_y: float) -> Tuple:
-        """Generate flyback trajectory."""
+    def move_to_center_scan(self, t_0,
+                        x_f: float, y_f: float, dwell_time: float,
+                        a_max_x: float, a_max_y: float) -> Tuple:
+        """Generate flyback trajectory with independent axis timing."""
+        x_0, y_0 = self.current_position
         dx = abs(x_f - x_0)
-        dy = abs(y_f- y_0)
-        t_x = 2 * np.sqrt(dx / a_max_x)
-        t_y = 2 * np.sqrt(dy / a_max_y)
-        
-        a_x = a_max_x
-        a_y = a_max_y
+        dy = abs(y_f - y_0)
+    
+        # Tiempo de movimiento para cada eje
+        t_x = 2 * np.sqrt(dx / a_max_x) if dx > 0 else 0.0
+        t_y = 2 * np.sqrt(dy / a_max_y) if dy > 0 else 0.0
+    
+        # Signos de movimiento
+        s_x = np.sign(x_f - x_0) if dx > 0 else 0
+        s_y = np.sign(y_f - y_0) if dy > 0 else 0
+    
+        # Tiempo total = el más largo de ambos
         t_total = max(t_x, t_y)
-        
-        t_end = t_total + t_0
+        t_end = t_0 + t_total
         t = np.arange(t_0, t_end + dwell_time, dwell_time)
         n_points = len(t)
-        t_half = t_total / 2
-        t = np.asarray(t, dtype=float)
+    
         x_back = np.empty_like(t)
         y_back = np.empty_like(t)
-       
-        # signos de movimiento: 0 si no hay movimiento
-        if x_f > x_0:
-            s_x = 1
-        elif x_f < x_0:
-            s_x = -1
+    
+        # --- EJE X ---
+        if s_x == 0:
+            # Sin movimiento
+            x_back[:] = x_0
         else:
-            s_x = 0
-       
-        if y_f > y_0:
-            s_y = 1
-        elif y_f < y_0:
-            s_y = -1
+            t_half_x = t_x / 2
+            mask_move_x = (t - t_0) < t_x
+            mask1_x = (t - t_0) < t_half_x
+            mask2_x = mask_move_x & ~mask1_x
+    
+            # Aceleración
+            t1 = (t - t_0)[mask1_x]
+            x_back[mask1_x] = x_0 + 0.5 * s_x * a_max_x * t1**2
+    
+            # Desaceleración
+            t2 = (t - t_0)[mask2_x] - t_half_x
+            v_x = a_max_x * t_half_x
+            x_back[mask2_x] = (x_0 + 0.5 * s_x * a_max_x * t_half_x**2 +
+                               s_x * v_x * t2 - 0.5 * s_x * a_max_x * t2**2)
+    
+            # Mantener en destino tras finalizar
+            x_back[~mask_move_x] = x_f
+    
+        # --- EJE Y ---
+        if s_y == 0:
+            y_back[:] = y_0
         else:
-            s_y = 0
-       
-        t_rel = t - t_0
-       
-        # máscaras para primera / segunda mitad
-        mask1 = t_rel < t_half
-        mask2 = ~mask1
-       
-        # --- eje X ---
-        if s_x == 0 or a_x == 0.0:
-            # no moverse en X: dejar constante
-            x_back[:] = float(x_0)
-        else:
-            t1 = t_rel[mask1]
-            x_back[mask1] = x_0 + 0.5 * s_x * a_x * t1**2
-       
-            t2 = t_rel[mask2] - t_half
-            v_x = a_x * t_half
-            x_back[mask2] = (
-                x_0 + 0.5 * s_x * a_x * t_half**2
-                + s_x * v_x * t2
-                - 0.5 * s_x * a_x * t2**2
-            )
-       
-        # --- eje Y ---
-        if s_y == 0 or a_y == 0.0:
-            # no moverse en Y: dejar constante
-            y_back[:] = float(y_0)
-        else:
-            t1 = t_rel[mask1]
-            y_back[mask1] = y_0 + 0.5 * s_y * a_y * t1**2
-       
-            t2 = t_rel[mask2] - t_half
-            v_y = a_y * t_half
-            y_back[mask2] = (
-                y_0 + 0.5 * s_y * a_y * t_half**2
-                + s_y * v_y * t2
-                - 0.5 * s_y * a_y * t2**2
-            )
-       
+            t_half_y = t_y / 2
+            mask_move_y = (t - t_0) < t_y
+            mask1_y = (t - t_0) < t_half_y
+            mask2_y = mask_move_y & ~mask1_y
+    
+            t1 = (t - t_0)[mask1_y]
+            y_back[mask1_y] = y_0 + 0.5 * s_y * a_max_y * t1**2
+    
+            t2 = (t - t_0)[mask2_y] - t_half_y
+            v_y = a_max_y * t_half_y
+            y_back[mask2_y] = (y_0 + 0.5 * s_y * a_max_y * t_half_y**2 +
+                               s_y * v_y * t2 - 0.5 * s_y * a_max_y * t2**2)
+    
+            y_back[~mask_move_y] = y_f
+    
+        self.current_position = np.array([x_f, y_f])
+   
         return t, x_back, y_back, n_points
 
     def escaneo2D_back(self, n_lines: int, x_0: float, y_0: float,
@@ -847,7 +852,7 @@ class NIDAQScan(BaseScan):
         # x_total -= (x_total.max() + x_total.min()) / 2
 
         y_step =  px_size
-        y_shifts = y_0 + np.arange(n_lines) * y_step
+        y_shifts = y_0 - np.arange(n_lines) * y_step
         y_offsets = np.repeat(y_shifts, num_points)
         # y_total = np.tile(np.ones_like(y)*y_0, n_lines) + y_offsets
         y_total = np.tile(y, n_lines) + (y_offsets - y_0)

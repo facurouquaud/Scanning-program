@@ -614,12 +614,21 @@ class FrontEnd(QMainWindow):
 
     def move_to_position(self):
         """Sets the center position according to text boxes."""
-        new_center = [float(le.text()) for le in self._position_inputs]
-        logger.info("Setting new center position:", new_center)
+        try:
+            new_center = np.array([float(le.text()) for le in self._position_inputs[:2]], dtype=float)         
+        except ValueError:
+            QMessageBox.warning(self, "Invalid input", "Center coordinates must be numeric.")
+            return
         self._center[:] = new_center
-        # piezo.move_to(new_center)
-        self.update_parameters()
-
+   
+   
+        # Sincronizar con el backend (¡crucial!)
+        if hasattr(self, "_backend") and self._backend is not None:
+            self._backend.current_position = new_center.copy()
+    
+   
+    
+      
     def update_image_extents(self):
         """ Updates extents and pixel size of image before scanning.
 
@@ -770,8 +779,7 @@ class FrontEnd(QMainWindow):
          # Actualizar visualización
         self.image_item.setImage(self.imagen, autoLevels=False)
         self.histogram.imageChanged(autoLevel=True)
-        self.update_guide_line(line_number)
-        # Procesar frame completo
+        self.update_guide_line(self._scan_params.true_px_num - 1 - line_number)        # Procesar frame completo
         if line_number == self._scan_params.true_px_num - 1:
             frame = np.copy(self.imagen)
             self.last_frame = frame
