@@ -41,7 +41,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QInputDialog, QAction, QMenu, QGridLayout, QFileDialog,
 )
 
-from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot, QPointF
+from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot, QPointF, QRectF
 import PyQt5.QtGui as QtGui
 import pyqtgraph as pg
 import scan_types
@@ -107,7 +107,7 @@ class FrontEnd(QMainWindow):
     line_arrived_signal = pyqtSignal(np.ndarray, int)
     scan_end_signal = pyqtSignal()
     scan_start_signal = pyqtSignal()
-    roi_visibility_changed = pyqtSignal(bool)
+   # roi_visibility_changed = pyqtSignal(bool)
 
     _guide_line: pg.InfiniteLine = None
     _scan_params: scan_types.RegionScanParameters
@@ -177,7 +177,7 @@ class FrontEnd(QMainWindow):
         self._scan_params = None
 
         # Center position (x, y, z)
-        self._center = np.array((0., 0., 3.,), dtype=np.float64)
+        self._center = np.array((10., 10., 3.,), dtype=np.float64)
 
         # Create dockable windows and UI components
         self.create_dock_widgets()
@@ -350,17 +350,17 @@ class FrontEnd(QMainWindow):
            
 
         # X Range input
-        self.x_range_input = pyqtutils.create_float_lineedit(100)  # Default X range value
+        self.x_range_input = pyqtutils.create_float_lineedit(10)  # Default X range value
         grid_layout.addWidget(QLabel("Fast Range (μm):"), 2, 0)
         grid_layout.addWidget(self.x_range_input, 2, 1)
 
         # Y Range input
-        self.y_range_input = pyqtutils.create_float_lineedit(100)  # Default Y range value
+        self.y_range_input = pyqtutils.create_float_lineedit(10)  # Default Y range value
         grid_layout.addWidget(QLabel("Slow Range (μm):"), 3, 0)
         grid_layout.addWidget(self.y_range_input, 3, 1)
 
         # Dwell time input
-        self.dwell_time_input = pyqtutils.create_float_lineedit(0.01)  # Default dwell time
+        self.dwell_time_input = pyqtutils.create_float_lineedit(400)  # Default dwell time
         grid_layout.addWidget(QLabel("Dwell Time (ms):"), 4, 0)
         grid_layout.addWidget(self.dwell_time_input, 4, 1)
 
@@ -374,7 +374,7 @@ class FrontEnd(QMainWindow):
 
 
         # Number of pixels input
-        self.num_pixels_input = pyqtutils.create_int_lineedit("500")  # Default number of pixels
+        self.num_pixels_input = pyqtutils.create_int_lineedit("40")  # Default number of pixels
         grid_layout.addWidget(QLabel("Number of Pixels:"), 7, 0)
         grid_layout.addWidget(self.num_pixels_input, 7, 1)
 
@@ -614,21 +614,12 @@ class FrontEnd(QMainWindow):
 
     def move_to_position(self):
         """Sets the center position according to text boxes."""
-        try:
-            new_center = np.array([float(le.text()) for le in self._position_inputs[:2]], dtype=float)         
-        except ValueError:
-            QMessageBox.warning(self, "Invalid input", "Center coordinates must be numeric.")
-            return
+        new_center = [float(le.text()) for le in self._position_inputs]
+        logger.info("Setting new center position:", new_center)
         self._center[:] = new_center
-   
-   
-        # Sincronizar con el backend (¡crucial!)
-        if hasattr(self, "_backend") and self._backend is not None:
-            self._backend.current_position = new_center.copy()
-    
-   
-    
-      
+        # piezo.move_to(new_center)
+        self.update_parameters()
+
     def update_image_extents(self):
         """ Updates extents and pixel size of image before scanning.
 
@@ -639,12 +630,15 @@ class FrontEnd(QMainWindow):
         tr = QtGui.QTransform()
         px_s = self._scan_params.pixel_size
         sp = self._scan_params.start_point
+        
+        # Set transformation for proper image orientation
+        # This is usually sufficient for proper image display
         self.image_item.setTransform(
-            tr.scale(px_s, px_s).translate(sp[0]/px_s - .5, sp[1]/px_s - .5))
-
-    # ----------------------------
-    # Data Handeling/Receiving
-    # ----------------------------
+            tr.scale(px_s, px_s).translate(sp[0]/px_s , sp[1]/px_s))
+    
+        # ----------------------------
+        # Data Handeling/Receiving
+        # ----------------------------
     @pyqtSlot()
     def handle_scan_end(self):
         """Manages scan end and updates UI accordingly."""
@@ -772,21 +766,25 @@ class FrontEnd(QMainWindow):
             combined_line = (pass1 + pass2) / 2.0
        
             # Asignar a la imagen (dimensión lenta, dimensión rápida)
-            self.imagen[:, line_number] = combined_line
+            self.imagen[:,-line_number -1] = combined_line
         else:
            # Modo de pasada única (FIRST o SECOND)
-            self.imagen[:, line_number] = line_data
-         # Actualizar visualización
-        self.image_item.setImage(self.imagen, autoLevels=False)
+           self.imagen[:, -line_number -1] = line_data
+       
+        # Actualizar visualización
+        self.image_item.setImage(self.imagen.T, autoLevels=False)
         self.histogram.imageChanged(autoLevel=True)
-        self.update_guide_line(self._scan_params.true_px_num - 1 - line_number)        # Procesar frame completo
-        if line_number == self._scan_params.true_px_num - 1:
+        self.update_guide_line(line_number)
+        y_val = self._scan_params.end_point[1] - line_number * self._scan_params.pixel_size
+        self._guide_line.setValue(y_val)
+        # Procesar frame completo
+        if line_number == self._scan_params.true_px_num -1:
             frame = np.copy(self.imagen)
             self.last_frame = frame
             # self.last_frame = self.normalize_image(self.imagen)
             self._map_window.add_region(
             frame,
-            self._scan_params.line_length_y,
+            self._scan_params.line_length_x,
             self._scan_params.center,
             self._scan_params.dwell_time )
             # Normalizar y procesar
@@ -842,40 +840,41 @@ class FrontEnd(QMainWindow):
 
     @pyqtSlot(bool)
     def apply_ROI_selection(self, checked: bool):
-        """ Apply ROI selection.
-
-        Be aware that the axes depend on the last scan type performed
-        # FIXME: W?
-
-        Parameters
-        ----------
-            checked : bool (needed only for signal compatibility).
-        """
-        # self._previous_scan_params = copy.deepcopy(self._scan_params)
-        roi_pos = self._ROI.pos()
-        roi_size = self._ROI.size()
-        shift = self._scan_params.pixel_size / 2
-        f_start = roi_pos.x() + shift
-        f_end = f_start + roi_size.x()
-        s_start = roi_pos.y() + shift
-        s_end = s_start + roi_size.y()
-        # Update center position
+        # lee posición y tamaño en coordenadas del plot (µm)
+        roi_pos = self._ROI.pos()   # QPointF en unidades del plot (µm)
+        roi_size = self._ROI.size() # QSizeF en µm
+        
+        f_start = roi_pos.x()
+        f_end   = f_start + roi_size.x()
+        s_start = roi_pos.y()
+        s_end   = s_start + roi_size.y()
+        
         axes = _scantype_axes_map[self._scan_params.scan_type]
-        self._center[axes[0]] = (f_start + f_end) / 2
-        self._center[axes[1]] = (s_start + s_end) / 2
-
-        logger.info("ROI changed: x [%f, %f], y [%f, %f]", f_start, f_end, s_start, s_end)
-
-
-        # Update position inputs
-        self._position_inputs[axes[0]].setText(f"{self._center[axes[0]]:.3f}")
-        self._position_inputs[axes[1]].setText(f"{self._center[axes[1]]:.3f}")
-        # Update range inputs
+        
+        # Calculate center coordinates correctly
+        f_center = (f_start + f_end) / 2.0
+        s_center = (s_start + s_end) / 2.0
+        
+        # Update the center array with correct axis mapping
+        self._center[axes[0]] = f_center  # Fast axis center
+        self._center[axes[1]] = s_center  # Slow axis center
+        
+        # Update position inputs with correct values
+        self._position_inputs[axes[0]].setText(f"{f_center:.3f}")
+        self._position_inputs[axes[1]].setText(f"{s_center:.3f}")
+        
+        # Update ranges directly with ROI size
         self.x_range_input.setText(f"{roi_size.x():.3f}")
         self.y_range_input.setText(f"{roi_size.y():.3f}")
-        # DO NOT Update parameters
-        # self.update_parameters()
-        self.request_restart()
+        
+        # IMPORTANT: apply parameters immediately
+        self.update_parameters()
+        
+        # If scanning, restart
+        if self.is_scanning:
+            self.scanner.stop_scan()
+            self.scanner.start_scan(self._scan_params)
+            
 
     def request_restart(self):
         """ Crops region selected by ROi and restarts."""
@@ -908,6 +907,7 @@ class FrontEnd(QMainWindow):
         """
         self._guide_line.setValue(line_number * self._scan_params.pixel_size +
                                   self._scan_params.start_point[1])
+    
 
     def update_scan_button_label(self, running: bool):
         """Update start/stop scan button label based on scanning state.
@@ -949,7 +949,7 @@ class FrontEnd(QMainWindow):
         Updates line profile plot based on current line segment ROI.
         """
         if self.line_profile_line is not None and self.imagen is not None:
-            data = self.line_profile_line.getArrayRegion(self.imagen.T, self.image_item)
+            data = self.line_profile_line.getArrayRegion(self.imagen, self.image_item)
             if data is not None:
                 x = np.arange(len(data))
                 self.line_profile_curve.setData(x, data)
@@ -1033,8 +1033,8 @@ class FrontEnd(QMainWindow):
         super().closeEvent(event)
 
 if __name__ == "__main__":
-    # scanner = mock_scanner()
-    scanner = NIDAQScan()
+    scanner = mock_scanner()
+   # scanner = NIDAQScan()
     app = QApplication(sys.argv)
     # app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
 
