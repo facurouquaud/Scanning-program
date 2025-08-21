@@ -360,7 +360,7 @@ class FrontEnd(QMainWindow):
         grid_layout.addWidget(self.y_range_input, 3, 1)
 
         # Dwell time input
-        self.dwell_time_input = pyqtutils.create_float_lineedit(400)  # Default dwell time
+        self.dwell_time_input = pyqtutils.create_float_lineedit(0.01)  # Default dwell time
         grid_layout.addWidget(QLabel("Dwell Time (ms):"), 4, 0)
         grid_layout.addWidget(self.dwell_time_input, 4, 1)
 
@@ -374,7 +374,7 @@ class FrontEnd(QMainWindow):
 
 
         # Number of pixels input
-        self.num_pixels_input = pyqtutils.create_int_lineedit("40")  # Default number of pixels
+        self.num_pixels_input = pyqtutils.create_int_lineedit("500")  # Default number of pixels
         grid_layout.addWidget(QLabel("Number of Pixels:"), 7, 0)
         grid_layout.addWidget(self.num_pixels_input, 7, 1)
 
@@ -766,13 +766,13 @@ class FrontEnd(QMainWindow):
             combined_line = (pass1 + pass2) / 2.0
        
             # Asignar a la imagen (dimensión lenta, dimensión rápida)
-            self.imagen[:,-line_number -1] = combined_line
+            self.imagen[:,-line_number ] = combined_line
         else:
            # Modo de pasada única (FIRST o SECOND)
            self.imagen[:, -line_number -1] = line_data
        
         # Actualizar visualización
-        self.image_item.setImage(self.imagen.T, autoLevels=False)
+        self.image_item.setImage(self.imagen, autoLevels=False)
         self.histogram.imageChanged(autoLevel=True)
         self.update_guide_line(line_number)
         y_val = self._scan_params.end_point[1] - line_number * self._scan_params.pixel_size
@@ -1024,8 +1024,8 @@ class FrontEnd(QMainWindow):
         event : QCloseEvent
             Close event.
         """
-        if self._scanner:
-            self._scanner.stop_scan()
+        if self.scanner:
+            self.scanner.stop_scan()
         # if self.variable_frames_file is not None:
         #     self.variable_frames_file.close()
         #     self.variable_frames_file = None
@@ -1034,7 +1034,7 @@ class FrontEnd(QMainWindow):
 
 if __name__ == "__main__":
     scanner = mock_scanner()
-   # scanner = NIDAQScan()
+    # scanner = NIDAQScan()
     app = QApplication(sys.argv)
     # app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
 
