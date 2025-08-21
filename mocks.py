@@ -58,10 +58,10 @@ class _mockThread(threading.Thread):
 
     def scan_line(self, n_linea: int):
         time.sleep(self._line_delay)
-        fp = self._fast_pos[n_linea] - 10
-        sp = self._slow_pos - 10
+        fp = self._fast_pos - 10
+        sp = self._slow_pos[-n_linea] - 10
         offset = 1
-        fp2 = self._fast_pos[n_linea] - 10 - offset
+        fp2 = self._fast_pos - 10 - offset
     
         # Primero generamos todos los datos posibles
         line_data_first = None
