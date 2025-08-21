@@ -186,15 +186,13 @@ class _NIDAQScanThread(threading.Thread):
     def run(self):
         """Main scanning loop."""
         last_line_last_pixel = None
-        processed_data = []
+        # processed_data = []
+        
         
         # Precompute center and flyback samples as integers
-        center_samples = int(round(self.total_center_samples))
-        flyback_samples = self.total_samples - center_samples - (self.n_lines * self.samples_per_line)
-        
         # Ensure flyback_samples is non-negative
-        flyback_samples = max(0, flyback_samples)
-        
+        center_samples = int(round(self.total_center_samples))
+        flyback_samples = max(0, self.total_samples - center_samples - (self.n_lines * self.samples_per_line))
         # AO-only relocation
         if self.x_rel is not None:
             try:
@@ -208,7 +206,6 @@ class _NIDAQScanThread(threading.Thread):
                         sample_mode=AcquisitionType.FINITE,
                         samps_per_chan=samps_rel
                     )
-                    writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
                     writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
                     writer.write_many_sample(xy_center_signal)
                     ao_task.start()
@@ -289,6 +286,7 @@ class _NIDAQScanThread(threading.Thread):
                                 number_of_samples_per_channel=self.samples_per_line,
                                 timeout=4.0
                             )
+                            # data.append(line_total_data)
                         except Exception as e:
                             logging.error(f"DAQ read error on line {line_idx}: {e}")
                             self._stop_event.set()
@@ -328,7 +326,7 @@ class _NIDAQScanThread(threading.Thread):
                             processed_line = diff_line
                             
                             # Store for visualization
-                            processed_data.append(processed_line)
+                            # processed_data.append(processed_line)
                             
                             last_line = (line_idx == self.n_lines - 1)
                             
@@ -645,7 +643,7 @@ class NIDAQScan(BaseScan):
             plt.show()
         # muestra_escaneo(n_lines, t, volt_x, volt_y)
         # if len(t_rel) > 1:
-        #     muestra_escaneo(1,t_rel,x_rel_v,y_rel_v)
+            # muestra_escaneo(1,t_rel,x_rel_v,y_rel_v)
         # devolver/crear thread pasando solo señales ya procesadas:
         return _NIDAQScanThread(
             params=params,
