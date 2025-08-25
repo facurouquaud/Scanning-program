@@ -226,10 +226,10 @@ class _NIDAQScanThread(threading.Thread):
                     ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao0", name_to_assign_to_channel="X")
                     
                     # Export sample clock for synchronization
-                    ao_task.export_signals.export_signal(
-                        signal_id=nidaqmx.constants.Signal.SAMPLE_CLOCK,
-                        output_terminal="/Dev1/PFI0"
-                    )
+                    # ao_task.export_signals.export_signal(
+                    #     signal_id=nidaqmx.constants.Signal.SAMPLE_CLOCK,
+                    #     output_terminal="/Dev1/PFI0"
+                    # )
                     
                     # Configure AO timing
                     ao_task.timing.cfg_samp_clk_timing(
@@ -566,30 +566,27 @@ class NIDAQScan(BaseScan):
             sample_rate=required_sample_rate,  # Usar el nuevo sample rate
             max_voltage=self.config.max_voltage
         )
+      
+        
+        
+        
         # Calcular parámetros
         x0, true_px, n_px_acc, _, v_f, acc, _ = self._calculate_parameters(
             sx,sy,px_size, dwell_time,n_pix
         )
         print(x0)
-        if sy>sx:
-            n_lines =  int(sy / (px_size))      
-        else:
-            n_lines = int(sx / px_size)
-        # Generar trayectorias
-        t, volt_x, volt_y, samples_per_line = self.escaneo2D_back(
-            n_lines, x0, start_y, dwell_time, n_px_acc, true_px, acc, v_f,px_size
-        )
-
-        # generar relocation solo si hay center en params
+       
+        # generar recentrado solo si hay center en params
+        # x_0, y_0 = self.current_position
         center = getattr(params, "center", None)
         reloc_signal = None
         if center is not None:
             # Preferir prev_center si existe (centro anterior en µm)
         
-            x_f_um = float(center[0])
-            y_f_um = float(center[1])
+            x_f_um = float(center[0] - center[0]/2)
+            y_f_um = float(center[1] + center[1]/2)
             t_rel, x_rel_um, y_rel_um, n_rel = self.move_to_center_scan(
-            0.0, 
+            0.0, self.current_position[0], self.current_position[1],
             x_f_um, 
             y_f_um,
             dwell_time,
@@ -612,15 +609,50 @@ class NIDAQScan(BaseScan):
             # clip por seguridad
             x_rel_v = np.clip(x_rel_v, -self.config.max_voltage, self.config.max_voltage)
             y_rel_v = np.clip(y_rel_v, -self.config.max_voltage, self.config.max_voltage)
+        if sy>sx:
+            n_lines =  int(sy / (px_size))      
+        else:
+            n_lines = int(sx / px_size)
+       
+        
+       
+        
+       
+        
+       # Generar trayectorias de frames
+        t, volt_x, volt_y, samples_per_line = self.escaneo2D_back(
+            n_lines, x0 , start_y , dwell_time, n_px_acc, true_px, acc, v_f,px_size
+        )
+
+       
 
            
+         
+        offset_x =   x_rel_v[-1]*np.ones_like(volt_x)
+        offset_y = y_rel_v[-1]*np.ones_like(volt_y)
+        volt_x = volt_x * self.config.um_to_volts*1E6 + offset_x
+        volt_y = volt_y* self.config.um_to_volts*1E6 + offset_y
         
-        # convertir a V
-        volt_x = volt_x * self.config.um_to_volts*1E6
-        volt_y = volt_y* self.config.um_to_volts*1E6
+        
+        # generar vuelta final al origen
+        t_back, x_back, y_back, n_back = self.move_to_center_scan(
+        0.0, volt_x[-1], volt_y[-1],
+        0, 
+        0,
+        dwell_time,
+        a_max_x=acc, 
+        a_max_y=acc
+                    )
+        x_back_v = x_back * self.config.um_to_volts
+        y_back_v = y_back * self.config.um_to_volts
+        # clip por seguridad
+        x_back_v = np.clip(x_back_v, -self.config.max_voltage, self.config.max_voltage)
+        y_back_v = np.clip(y_back_v, -self.config.max_voltage, self.config.max_voltage)
+        
         # preparar señal XY completa para escribir (Y, X) y total_samples
         total_samples = len(volt_x)
         total_center_samples = len(x_rel_v)
+        total_back_samples = len(x_back_v)
         
         # construir line_indices igual que antes
         line_indices = [(i * samples_per_line, (i + 1) * samples_per_line) for i in range(n_lines)]
@@ -641,9 +673,12 @@ class NIDAQScan(BaseScan):
             ax2.grid(True)
             plt.tight_layout()
             plt.show()
-        # muestra_escaneo(n_lines, t, volt_x, volt_y)
-        # if len(t_rel) > 1:
-            # muestra_escaneo(1,t_rel,x_rel_v,y_rel_v)
+        if len(t_rel) > 1:
+              muestra_escaneo(1,t_rel,x_rel_v,y_rel_v)
+        muestra_escaneo(n_lines, t, volt_x, volt_y)
+        if len(t_back) > 1:
+              muestra_escaneo(1,t_back,x_back_v,y_back_v)
+       
         # devolver/crear thread pasando solo señales ya procesadas:
         return _NIDAQScanThread(
             params=params,
@@ -720,11 +755,11 @@ class NIDAQScan(BaseScan):
         
         return t, x_back, y_back, n_points
     
-    def move_to_center_scan(self, t_0,
+    def move_to_center_scan(self, t_0,x_0, y_0,
                         x_f: float, y_f: float, dwell_time: float,
                         a_max_x: float, a_max_y: float) -> Tuple:
         """Generate flyback trajectory with independent axis timing."""
-        x_0, y_0 = self.current_position
+        
         dx = abs(x_f - x_0)
         dy = abs(y_f - y_0)
     
