@@ -198,7 +198,7 @@ class _NIDAQScanThread(threading.Thread):
         
         # Ensure flyback_samples is non-negative
         flyback_samples = max(0, flyback_samples)
-        back_samples = self
+        back_samples = self.total_back_samples
         
         
         # AO-only relocation - Mismo enfoque que el escaneo principal
@@ -385,8 +385,8 @@ class _NIDAQScanThread(threading.Thread):
         finally:
             if not self._error_occurred and not self._stop_event.is_set():
                 try:
-                    xy_back_signal = np.vstack((self.y_back, self.x_back))
-                    n_reloc_samples = len(self.x_back)
+                    xy_back_signal = np.vstack((self.y_back_v, self.x_back_v))
+                    n_reloc_samples = len(self.x_back_v)
                     
                     with nidaqmx.Task() as ao_task:
                         # Configurar canales AO igual que en el escaneo principal
@@ -408,7 +408,7 @@ class _NIDAQScanThread(threading.Thread):
                         ao_task.start()
                         ao_task.stop()
                         
-                    logging.info("Relocación completada correctamente.")
+                    logging.info("Relocación al cero completada correctamente.")
                 except Exception as e:
                     logging.error(f"Error en relocación: {e}")
                     self._stop_event.set()
@@ -592,6 +592,10 @@ class NIDAQScan(BaseScan):
         except (TypeError, ValueError) as e:
             logging.error(f"Parameter calculation error: {e}")
             raise
+    def update_current_position(self, x: float, y: float):
+        """Actualiza la posición actual del escáner."""
+        self.current_position = np.array([x, y])
+        logging.info(f"Posición actual actualizada: ({x}, {y}) µm")
 
     def _create_scan_thread(self) -> _NIDAQScanThread:
         """Create and configure scan thread with voltage clamping."""
@@ -629,13 +633,18 @@ class NIDAQScan(BaseScan):
         # x_0, y_0 = self.current_position
         center = getattr(params, "center", None)
         reloc_signal = None
+       
         if center is not None:
             # Preferir prev_center si existe (centro anterior en µm)
+            x_f_um = np.copy(-x0*1E6 + params.start_point[0])
+            y_f_um = np.copy(-start_y*1E6)
+            # x_f_um = params.start_point[0]*2
+            # y_f_um =  params.start_point[1]*2
+            
+            
         
-            x_f_um = float(center[0] - center[0]/2)
-            y_f_um = float(center[1] + center[1]/2)
             t_rel, x_rel_um, y_rel_um, n_rel = self.move_to_center_scan(
-            0.0, self.current_position[0], self.current_position[1],
+            0.0,
             x_f_um, 
             y_f_um,
             dwell_time,
@@ -658,6 +667,7 @@ class NIDAQScan(BaseScan):
             # clip por seguridad
             x_rel_v = np.clip(x_rel_v, -self.config.max_voltage, self.config.max_voltage)
             y_rel_v = np.clip(y_rel_v, -self.config.max_voltage, self.config.max_voltage)
+            self.update_current_position(x_f_um,y_f_um)
         if sy>sx:
             n_lines =  int(sy / (px_size))      
         else:
@@ -681,13 +691,11 @@ class NIDAQScan(BaseScan):
         offset_y = y_rel_v[-1]*np.ones_like(volt_y)
         volt_x = volt_x * self.config.um_to_volts*1E6 + offset_x
         volt_y = volt_y* self.config.um_to_volts*1E6 + offset_y
-        last_x = volt_x[-1] 
-        last_y = volt_y[-1] 
         
         
         # generar vuelta final al origen
         t_back, x_back, y_back, n_back = self.move_to_center_scan(
-        0.0, last_x, last_y,
+        0.0,
         0, 
         0,
         dwell_time,
@@ -699,7 +707,7 @@ class NIDAQScan(BaseScan):
         # clip por seguridad
         x_back_v = np.clip(x_back_v, -self.config.max_voltage, self.config.max_voltage)
         y_back_v = np.clip(y_back_v, -self.config.max_voltage, self.config.max_voltage)
-        
+        self.update_current_position(0,0)
         # preparar señal XY completa para escribir (Y, X) y total_samples
         total_samples = len(volt_x)
         total_center_samples = len(x_rel_v)
@@ -712,11 +720,11 @@ class NIDAQScan(BaseScan):
                     f"X range: {np.min(volt_x):.2f} to {np.max(volt_x):.2f} µm, "
                     f"Y range: {np.min(volt_y):.2f} to {np.max(volt_y):.2f} µm, "
                     f"Samples: {len(volt_x)}, Lines: {n_lines}")
-        def muestra_escaneo(N,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+        def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
             fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
             ax1.scatter(t, x,s = 8, color ="black")
             ax1.set_ylabel("Posición X [V]")
-            ax1.set_title(f"Trayectoria de {N} líneas de escaneo en x e y")
+            ax1.set_title(titulo)
             ax1.grid(True)
             ax2.scatter(t, y,s = 8, color="black")
             ax2.set_ylabel("Posición Y [V]")
@@ -725,10 +733,10 @@ class NIDAQScan(BaseScan):
             plt.tight_layout()
             plt.show()
         if len(t_rel) > 1:
-              muestra_escaneo(1,t_rel,x_rel_v,y_rel_v)
-        muestra_escaneo(n_lines, t, volt_x, volt_y)
+              muestra_escaneo("Voltajes de recentrado",t_rel,x_rel_v,y_rel_v)
+        muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_x, volt_y)
         if len(t_back) > 1:
-              muestra_escaneo(1,t_back,x_back_v,y_back_v)
+               muestra_escaneo("Voltajes de vuelta al origen",t_back,x_back_v,y_back_v)
        
         # devolver/crear thread pasando solo señales ya procesadas:
         return _NIDAQScanThread(
@@ -809,11 +817,11 @@ class NIDAQScan(BaseScan):
         
         return t, x_back, y_back, n_points
     
-    def move_to_center_scan(self, t_0,x_0, y_0,
+    def move_to_center_scan(self, t_0,
                         x_f: float, y_f: float, dwell_time: float,
                         a_max_x: float, a_max_y: float) -> Tuple:
         """Generate flyback trajectory with independent axis timing."""
-        
+        x_0, y_0 = self.current_position
         dx = abs(x_f - x_0)
         dy = abs(y_f - y_0)
     
@@ -876,7 +884,7 @@ class NIDAQScan(BaseScan):
     
             y_back[~mask_move_y] = y_f
     
-      #  self.current_position = np.array([x_f, y_f])
+        
    
         return t, x_back, y_back, n_points
 
