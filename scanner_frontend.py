@@ -177,7 +177,7 @@ class FrontEnd(QMainWindow):
         self._scan_params = None
 
         # Center position (x, y, z)
-        self._center = np.array((10., 10., 3.,), dtype=np.float64)
+        self._center = np.array((0, 0, 3.,), dtype=np.float64)
 
         # Create dockable windows and UI components
         self.create_dock_widgets()
@@ -542,7 +542,7 @@ class FrontEnd(QMainWindow):
         self.num_pixels_input.setText(self._initial_params['num_pixels'])
 
         # Reset center position
-        self._center = np.array((10., 10., 3.), dtype=np.float64)
+        self._center = np.array((0, 0, 3.), dtype=np.float64)
         for le, coord in zip(self._position_inputs, self._center):
             le.setText(f"{coord:.3f}")
 
@@ -1033,8 +1033,8 @@ class FrontEnd(QMainWindow):
         super().closeEvent(event)
 
 if __name__ == "__main__":
-    scanner = mock_scanner()
-    # scanner = NIDAQScan()
+    # scanner = mock_scanner()
+    scanner = NIDAQScan()
     app = QApplication(sys.argv)
     # app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
 
