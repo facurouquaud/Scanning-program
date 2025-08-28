@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 from scan_parameters import RegionScanData
 from typing import Tuple
 import time
+import copy
 
 # Define callback types
 StartCallback = Callable[[object, Tuple[int, int]], None]
@@ -636,8 +637,8 @@ class NIDAQScan(BaseScan):
        
         if center is not None:
             # Preferir prev_center si existe (centro anterior en µm)
-            x_f_um = np.copy(-x0*1E6 + params.start_point[0])
-            y_f_um = np.copy(-start_y*1E6)
+            x_f_um = copy.deepcopy(params.start_point[0]*1E-6)
+            y_f_um = copy.deepcopy(2*params.end_point[1]*1E-6)
             # x_f_um = params.start_point[0]*2
             # y_f_um =  params.start_point[1]*2
             
@@ -652,8 +653,8 @@ class NIDAQScan(BaseScan):
             a_max_y=acc
                         )
                 # convertir a V (si config.um_to_volts es V/µm)
-            x_rel_v = x_rel_um * self.config.um_to_volts
-            y_rel_v = y_rel_um * self.config.um_to_volts
+            x_rel_v = x_rel_um * self.config.um_to_volts*1E6
+            y_rel_v = y_rel_um * self.config.um_to_volts*1E6
             print(x_rel_v)
             print(y_rel_v)
             
@@ -680,7 +681,7 @@ class NIDAQScan(BaseScan):
         
        # Generar trayectorias de frames
         t, volt_x, volt_y, samples_per_line = self.escaneo2D_back(
-            n_lines, x0 , start_y , dwell_time, n_px_acc, true_px, acc, v_f,px_size
+            n_lines, x0 , params.end_point[1]*1E-6, dwell_time, n_px_acc, true_px, acc, v_f, px_size
         )
 
        
@@ -702,8 +703,8 @@ class NIDAQScan(BaseScan):
         a_max_x=acc, 
         a_max_y=acc
                     )
-        x_back_v = x_back * self.config.um_to_volts
-        y_back_v = y_back * self.config.um_to_volts
+        x_back_v = x_back * self.config.um_to_volts*1E6
+        y_back_v = y_back * self.config.um_to_volts*1E6
         # clip por seguridad
         x_back_v = np.clip(x_back_v, -self.config.max_voltage, self.config.max_voltage)
         y_back_v = np.clip(y_back_v, -self.config.max_voltage, self.config.max_voltage)
@@ -972,9 +973,9 @@ class NIDAQScan(BaseScan):
         t_total = np.concatenate([t_total, t_back])
         x_total = np.concatenate([x_total, x_back])
         y_total = np.concatenate([y_total, y_back])
-        y_total -= (y_total.max() + y_total.min()) / 2
+        # y_total -= (y_total.max() + y_total.min()) / 2
         # y_total[-num_points:] = y_total[-num_points]
-        x_total -= (x_total.max() + x_total.min()) / 2
+        # x_total -= (x_total.max() + x_total.min()) / 2
 
 
         return t_total, x_total, y_total, int(n_points)
