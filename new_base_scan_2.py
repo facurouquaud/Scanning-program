@@ -221,8 +221,9 @@ class _NIDAQScanThread(threading.Thread):
                     )
                     
                     # Escribir datos igual que en el escaneo principal
-                    writer = AnalogMultiChannelWriter(ao_task.out_stream)
-                    writer.write_many_sample(xy_reloc_signal)
+                    writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
+                    number_of_samples_written_signal = ao_task.write(xy_reloc_signal, auto_start=False)
+                    
                     
                     # Iniciar y esperar completación
                     ao_task.start()
@@ -273,7 +274,8 @@ class _NIDAQScanThread(threading.Thread):
                         samps_per_chan=self.total_samples 
                     )
                     
-               
+                    writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
+                    number_of_samples_written_signal = ao_task.write(xy_signal, auto_start=False)
                     
                     # Start tasks - CI first then AO
                     ci_task.start()
@@ -292,7 +294,12 @@ class _NIDAQScanThread(threading.Thread):
                     #     except Exception as e:
                     #         logging.error(f"Error reading center samples: {e}")
                     #         self._stop_event.set()
-                    #         continue
+                    #         continueç
+                    if center_samples > 0:
+                        try:
+                            _ = ci_task.read(number_of_samples_per_channel=center_samples, timeout=4.0)
+                        except Exception as e:
+                            logging.warning(f"Could not read center samples (continuing): {e}")
                     
                     # Process line by line
                     for line_idx, (start, end) in enumerate(self.line_indices):
@@ -402,8 +409,9 @@ class _NIDAQScanThread(threading.Thread):
                         )
                         
                         # Escribir datos igual que en el escaneo principal
-                        writer = AnalogMultiChannelWriter(ao_task.out_stream)
-                        writer.write_many_sample(xy_back_signal)
+                        writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
+                        number_of_samples_written_back = ao_task.write(xy_back_signal, auto_start=False)
+                        
                         
                         # Iniciar y esperar completación
                         ao_task.start()
@@ -556,43 +564,77 @@ class NIDAQScan(BaseScan):
             except Exception as e:
                 logging.error(f"Stop callback error: {e}")
 
-    def _calculate_parameters(self, scan_width_x: float, scan_width_y, pixel_size, dwell_time: float, n_pix) -> Tuple:
-        """Calculate scanning parameters with type safety."""
-        try:
-            # Validar valores positivos
-            self.a_max = 130  # µm/ms² 
-            if pixel_size <= 0 or self.a_max <= 0 or dwell_time <= 0:
-                self._execute_scan_stop_callbacks()
-                raise ValueError("Parameters must be positive")
+    def _calculate_parameters(self, scan_width_x: float, scan_width_y: float, pixel_size: float,
+                          dwell_time: float, n_pix: int) -> Tuple:
+        """
+        Calcula parámetros de escaneo.
+    
+        REQUISITOS
+        # Tiempo mínimo de aceleración para alcanzar v_f con a_max_si
+        t_acc_min = v_f / a_max_si  # s
+     DE UNIDADES:
+          - pixel_size: metros (m)
+          - dwell_time: segundos (s)
+          - scan_width_x/scan_width_y: metros (m)
+        Devuelve:
+          x0 (m), n_pix, n_acc (muestras), n_acc_min, v_f (m/s), acc (m/s^2), v_f (repetido)
+        """
+        import math, sys
+        self.a_max = 130 # µm/ms²
+    
+        # --- PARÁMETROS FIJOS (documentados en SI) ---
+        # Originalmente 130 µm/ms^2 -> equivale a 130 m/s^2 (ver conversión en la explicación)
+    
+        # Validaciones básicas
+        if pixel_size <= 0  or dwell_time <= 0:
+            self._execute_scan_stop_callbacks()
+            raise ValueError("Parameters must be positive")
+    
+        # Debug: imprimir entradas (m, s)
+        print("DEBUG _calculate_parameters inputs:", file=sys.stderr)
+        print(f"  scan_width_x (m): {scan_width_x}", file=sys.stderr)
+        print(f"  scan_width_y (m): {scan_width_y}", file=sys.stderr)
+        print(f"  pixel_size (m): {pixel_size}", file=sys.stderr)
+        print(f"  dwell_time (s): {dwell_time}", file=sys.stderr)
+        print(f"  n_pix: {n_pix}", file=sys.stderr)
+    
+        # v_f en m/s (velocidad de muestreo = tamaño de píxel / tiempo por píxel)
+        v_f = pixel_size / dwell_time
+        t_acc_min = v_f / self.a_max
+        n_acc_min = math.ceil(t_acc_min / dwell_time)
+        n_acc =  max(int(n_acc_min), 4)  # Asegurar mínimo 4
+        acc = v_f / (n_acc * dwell_time)
+    
+     
+    
+        # Debug: imprimir intermedios
+        print("DEBUG _calculate_parameters internals:", file=sys.stderr)
+        print(f"  v_f (m/s): {v_f}", file=sys.stderr)
+        print(f"  t_acc_min (s): {t_acc_min}", file=sys.stderr)
+        print(f"  n_acc_min (samples): {n_acc_min}", file=sys.stderr)
+        print(f"  n_acc (samples, used): {n_acc}", file=sys.stderr)
+        print(f"  acc (m/s^2): {acc}", file=sys.stderr)
+    
+        # Comprobaciones
+        if scan_width_x > 100 or scan_width_y > 100:  # si estas en metros, 100 m es enorme; tal vez querías µm
+            self._execute_scan_stop_callbacks()
+            raise ValueError("Region out of range")
+    
+        if acc > self.a_max * 1.0001:  # margen pequeño
+            self._execute_scan_stop_callbacks()
+            raise ValueError("Acceleration out of range")
+    
+        if n_pix > 500:
+            self._execute_scan_stop_callbacks()
+            raise ValueError("number of pixels out of range")
+    
+        # x0: distancia recorrida durante la aceleración (en metros)
+        x0 = 0.5 * acc * ((n_acc * dwell_time) ** 2)
+    
+        return x0, n_pix, n_acc, n_acc_min, v_f, acc, v_f
             
-            # Cálculos principales
-            v_f = pixel_size / dwell_time
-            t_acc_min = v_f / self.a_max
-            n_acc_min = math.ceil(t_acc_min / dwell_time)
-            n_acc =  max(int(n_acc_min), 4)  # Asegurar mínimo 4
-            acc = v_f / (n_acc * dwell_time)
-            print(f"la acc es {acc}")
-            if scan_width_x > 100 or scan_width_y >100:
-                self._execute_scan_stop_callbacks()
-
-                raise ValueError("Region out of range")
-            if acc > self.a_max:
-                self._execute_scan_stop_callbacks()
-
-                raise ValueError("Acceleration out of range")
-            
-            if n_pix > 500:
-                self._execute_scan_stop_callbacks()
-                raise ValueError("number of pixels out of range")
-                
-            x0 = (0.5 * acc * ((n_acc * dwell_time) ** 2))
-            
-            
-            return x0, n_pix, n_acc, n_acc_min, v_f, acc, v_f
         
-        except (TypeError, ValueError) as e:
-            logging.error(f"Parameter calculation error: {e}")
-            raise
+            
     def update_current_position(self, x: float, y: float):
         """Actualiza la posición actual del escáner."""
         self.current_position = np.array([x, y])
@@ -674,70 +716,140 @@ class NIDAQScan(BaseScan):
         else:
             n_lines = int(sx / px_size)
        
+        # --- Asumo: x_rel_um, y_rel_um están en metros (rename para claridad) ---
+        x_rel_m = x_rel_um    # si realmente son metros
+        y_rel_m = y_rel_um
         
-       
+        # Asegurar >=2 puntos (en metros)
+        if x_rel_m.size < 2:
+            x_rel_m = np.pad(x_rel_m, (0, 2 - x_rel_m.size), mode='edge')
+        if y_rel_m.size < 2:
+            y_rel_m = np.pad(y_rel_m, (0, 2 - y_rel_m.size), mode='edge')
         
-       
-        
-       # Generar trayectorias de frames
-        t, volt_x, volt_y, samples_per_line = self.escaneo2D_back(
+        # Trajectoria de escaneo: escaneo2D_back devuelve arrays en metros (supuesto)
+        t, scan_x_m, scan_y_m, samples_per_line = self.escaneo2D_back(
             n_lines, x0 , params.end_point[1]*1E-6, dwell_time, n_px_acc, true_px, acc, v_f, px_size
         )
+        
+        # --- CALCULAR OFFSETS EN METROS para asegurar continuidad ---
+        # último punto del recentrado (en metros)
+        last_center_x_m = x_rel_m[-1]
+        last_center_y_m = y_rel_m[-1]
+        
+        # offset para que el primer punto del escaneo coincida con final del recentrado
+        offset_scan_x_m = last_center_x_m - scan_x_m[0]
+        offset_scan_y_m = last_center_y_m - scan_y_m[0]
+        
+        # aplicar offset (en metros)
+        scan_x_m_shifted = scan_x_m + offset_scan_x_m
+        scan_y_m_shifted = scan_y_m + offset_scan_y_m
+        
+        # ahora generar vuelta al origen (back) en metros
+        t_back, back_x_m, back_y_m, n_back = self.move_to_center_scan(
+            0.0, 0, 0, dwell_time, a_max_x=acc, a_max_y=acc
+        )
+        self.update_current_position(0,0)
+        # offset para que el primer punto de la vuelta coincida con el último punto del escaneo
+        last_scan_x_m = scan_x_m_shifted[-1]
+        last_scan_y_m = scan_y_m_shifted[-1]
+        offset_back_x_m = last_scan_x_m - back_x_m[0]
+        offset_back_y_m = last_scan_y_m - back_y_m[0]
+        
+        back_x_m_shifted = back_x_m + offset_back_x_m
+        back_y_m_shifted = back_y_m + offset_back_y_m
+        
+        # --- Convertir todo a voltios UNA VEZ (V/µm * 1e6 µm/m) ---
+        conv = self.config.um_to_volts * 1e6
+        x_rel_v = x_rel_m * conv
+        y_rel_v = y_rel_m * conv
+        
+        volt_x = scan_x_m_shifted * conv
+        volt_y = scan_y_m_shifted * conv
+        
+        x_back_v = back_x_m_shifted * conv
+        y_back_v = back_y_m_shifted * conv
+        
+        # Clipping
+        volt_x = np.clip(volt_x, -self.config.max_voltage, self.config.max_voltage)
+        volt_y = np.clip(volt_y, -self.config.max_voltage, self.config.max_voltage)
+        x_rel_v = np.clip(x_rel_v, -self.config.max_voltage, self.config.max_voltage)
+        y_rel_v = np.clip(y_rel_v, -self.config.max_voltage, self.config.max_voltage)
+        x_back_v = np.clip(x_back_v, -self.config.max_voltage, self.config.max_voltage)
+        y_back_v = np.clip(y_back_v, -self.config.max_voltage, self.config.max_voltage)
+        
+        # --- Comprobaciones rápidas ---
+        print("Continuidad center->scan (V):", x_rel_v[-1], volt_x[0], "diff:", x_rel_v[-1]-volt_x[0])
+        print("Continuidad scan->back (V):", volt_x[-1], x_back_v[0], "diff:", volt_x[-1]-x_back_v[0])
+        
+        # Asserts (opcional, lanzar error si no coincide dentro de tol)
+        tol = 1e-6
+        assert np.allclose(x_rel_v[-1], volt_x[0], atol=tol), "No coincide X center->scan"
+        assert np.allclose(y_rel_v[-1], volt_y[0], atol=tol), "No coincide Y center->scan"
+        assert np.allclose(volt_x[-1], x_back_v[0], atol=tol), "No coincide X scan->back"
+        assert np.allclose(volt_y[-1], y_back_v[0], atol=tol), "No coincide Y scan->back"
+        total_samples = len(volt_x)
+        total_center_samples = len(x_rel_v)
+        total_back_samples = len(x_back_v)
+        #  # construir line_indices igual que antes
+        line_indices = [(i * samples_per_line, (i + 1) * samples_per_line) for i in range(n_lines)]
+                
+               
+        
+       # # Generar trayectorias de frames
+       #  t, volt_x, volt_y, samples_per_line = self.escaneo2D_back(
+       #      n_lines, x0 , params.end_point[1]*1E-6, dwell_time, n_px_acc, true_px, acc, v_f, px_size
+       #  )
 
        
 
            
          
-        offset_x =   x_rel_v[-1]*np.ones_like(volt_x)
-        offset_y = y_rel_v[-1]*np.ones_like(volt_y)
-        volt_x = volt_x * self.config.um_to_volts*1E6 + offset_x
-        volt_y = volt_y* self.config.um_to_volts*1E6 + offset_y
+       #  offset_x =   x_rel_v[-1]*np.ones_like(volt_x)
+       #  offset_y = y_rel_v[-1]*np.ones_like(volt_y)
+       #  volt_x = volt_x * self.config.um_to_volts*1E6 + offset_x
+       #  volt_y = volt_y* self.config.um_to_volts*1E6 + offset_y
         
         
-        # generar vuelta final al origen
-        t_back, x_back, y_back, n_back = self.move_to_center_scan(
-        0.0,
-        0, 
-        0,
-        dwell_time,
-        a_max_x=acc, 
-        a_max_y=acc
-                    )
-        x_back_v = x_back * self.config.um_to_volts*1E6
-        y_back_v = y_back * self.config.um_to_volts*1E6
-        # clip por seguridad
-        x_back_v = np.clip(x_back_v, -self.config.max_voltage, self.config.max_voltage)
-        y_back_v = np.clip(y_back_v, -self.config.max_voltage, self.config.max_voltage)
-        self.update_current_position(0,0)
-        # preparar señal XY completa para escribir (Y, X) y total_samples
-        total_samples = len(volt_x)
-        total_center_samples = len(x_rel_v)
-        total_back_samples = len(x_back_v)
-        
-        # construir line_indices igual que antes
-        line_indices = [(i * samples_per_line, (i + 1) * samples_per_line) for i in range(n_lines)]
-        # Registrar información de trayectoria
-        logging.info(f"Generated trajectory: "
-                    f"X range: {np.min(volt_x):.2f} to {np.max(volt_x):.2f} µm, "
-                    f"Y range: {np.min(volt_y):.2f} to {np.max(volt_y):.2f} µm, "
-                    f"Samples: {len(volt_x)}, Lines: {n_lines}")
-        def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
-            fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
-            ax1.scatter(t, x,s = 8, color ="black")
-            ax1.set_ylabel("Posición X [V]")
-            ax1.set_title(titulo)
-            ax1.grid(True)
-            ax2.scatter(t, y,s = 8, color="black")
-            ax2.set_ylabel("Posición Y [V]")
-            ax2.set_xlabel("Tiempo [us]")
-            ax2.grid(True)
-            plt.tight_layout()
-            plt.show()
-        if len(t_rel) > 1:
-              muestra_escaneo("Voltajes de recentrado",t_rel,x_rel_v,y_rel_v)
-        muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_x, volt_y)
-        if len(t_back) > 1:
-               muestra_escaneo("Voltajes de vuelta al origen",t_back,x_back_v,y_back_v)
+       #  # generar vuelta final al origen
+       #  t_back, x_back, y_back, n_back = self.move_to_center_scan(
+       #  0.0,
+       #  0, 
+       #  0,
+       #  dwell_time,
+       #  a_max_x=acc, 
+       #  a_max_y=acc
+       #              )
+       #  x_back_v = x_back * self.config.um_to_volts*1E6
+       #  y_back_v = y_back * self.config.um_to_volts*1E6
+       #  # clip por seguridad
+       #  x_back_v = np.clip(x_back_v, -self.config.max_voltage, self.config.max_voltage)
+       #  y_back_v = np.clip(y_back_v, -self.config.max_voltage, self.config.max_voltage)
+       #  self.update_current_position(0,0)
+       #  # preparar señal XY completa para escribir (Y, X) y total_samples
+      
+      
+       #  # Registrar información de trayectoria
+       #  logging.info(f"Generated trajectory: "
+       #              f"X range: {np.min(volt_x):.2f} to {np.max(volt_x):.2f} µm, "
+       #              f"Y range: {np.min(volt_y):.2f} to {np.max(volt_y):.2f} µm, "
+       #              f"Samples: {len(volt_x)}, Lines: {n_lines}")
+        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
+        #     ax1.scatter(t, x,s = 8, color ="black")
+        #     ax1.set_ylabel("Posición X [V]")
+        #     ax1.set_title(titulo)
+        #     ax1.grid(True)
+        #     ax2.scatter(t, y,s = 8, color="black")
+        #     ax2.set_ylabel("Posición Y [V]")
+        #     ax2.set_xlabel("Tiempo [us]")
+        #     ax2.grid(True)
+        #     plt.tight_layout()
+        #     plt.show()
+        # if len(t_rel) > 1:
+        #       muestra_escaneo("Voltajes de recentrado",t_rel,x_rel_v,y_rel_v)
+        # muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_x, volt_y)
+        # if len(t_back) > 1:
+        #         muestra_escaneo("Voltajes de vuelta al origen",t_back,x_back_v,y_back_v)
        
         # devolver/crear thread pasando solo señales ya procesadas:
         return _NIDAQScanThread(
