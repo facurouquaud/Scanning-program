@@ -201,7 +201,6 @@ class _NIDAQScanThread(threading.Thread):
         flyback_samples = max(0, flyback_samples)
         back_samples = self.total_back_samples
         
-        
         # AO-only relocation - Mismo enfoque que el escaneo principal
         if self.x_rel is not None and self.y_rel is not None:
             try:
@@ -228,7 +227,6 @@ class _NIDAQScanThread(threading.Thread):
                     # Iniciar y esperar completación
                     ao_task.start()
                     ao_task.stop()
-                    
                 logging.info("Relocación completada correctamente.")
             except Exception as e:
                 logging.error(f"Error en relocación: {e}")
@@ -236,9 +234,8 @@ class _NIDAQScanThread(threading.Thread):
                 return
     
         try:
-            self._scanning = True
             frame_count = 0
-            
+            self._scanning = True
             while not self._stop_event.is_set() and self._scanning:
                 xy_signal = np.vstack((self.volt_y, self.volt_x))
                 
@@ -384,6 +381,7 @@ class _NIDAQScanThread(threading.Thread):
                 frame_count += 1
                 logging.info(f"Completed frame {frame_count}")
                 last_line_last_pixel = None  # Reset for next frame
+
         
         except Exception as e:
             logging.error(f"Critical scan error: {e}", exc_info=True)
@@ -391,7 +389,8 @@ class _NIDAQScanThread(threading.Thread):
             self._scanning = False
         
         finally:
-            if not self._error_occurred and not self._stop_event.is_set():
+            self._stop_event.set()
+            if self._stop_event.is_set():
                 try:
                     xy_back_signal = np.vstack((self.y_back_v, self.x_back_v))
                     n_reloc_samples = len(self.x_back_v)
@@ -405,7 +404,7 @@ class _NIDAQScanThread(threading.Thread):
                         ao_task.timing.cfg_samp_clk_timing(
                             rate=self.config.sample_rate,
                             sample_mode=AcquisitionType.FINITE,
-                            samps_per_chan=back_samples
+                            samps_per_chan= n_reloc_samples
                         )
                         
                         # Escribir datos igual que en el escaneo principal
@@ -487,7 +486,7 @@ class NIDAQScan(BaseScan):
 
     def start_scan(self,  params: scan_parameters.RegionScanParameters):
         """Start a new scan with given parameters."""
-        if self.is_scanning:
+        if self._scanning:
             self.stop_scan()
             
         with self._lock:
@@ -532,7 +531,7 @@ class NIDAQScan(BaseScan):
 
     def stop_scan(self):
         """Stop the current scan."""
-        if not self.is_scanning:
+        if not self._scanning:
             logging.warning("No active scan to stop")
             return
         
