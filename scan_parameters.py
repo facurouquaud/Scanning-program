@@ -79,17 +79,17 @@ class RegionScanParameters:
 
     @property
     def pixel_size(self) -> float:
-        if self.line_length_x > self.line_y:
-            return self.line_length_x / self.true_px_num
+        if self.line_length_fast > self.line_slow:
+            return self.line_length_slow / self.true_px_num
         else:
-            return self.line_length_y / self.true_px_num
+            return self.line_length_fast / self.true_px_num
 
     @property
-    def line_length_x(self) -> float:
+    def line_length_fast(self) -> float:
         return self.end_point[0] - self.start_point[0]
 
     @property
-    def line_length_y(self) -> float:
+    def line_length_slow(self) -> float:
         return self.end_point[1] - self.start_point[1]
     
 
