@@ -31,13 +31,15 @@ ScanCallback = Callable[[np.ndarray, int, bool], None]
 class ScannerConfig:
     def __init__(self,
                  device_name: str = "Dev1",
-                 um_to_volts: float = 0.04,
+                 um_to_volts_DAQ: float = 0.04,
+                 um_to_volts_NANO: float = 0.001, #VER BIEN 
                  ao_channels: List[str] = ["ao0", "ao1"],
                  ci_channel: str = "ctr0",
                  sample_rate: float = 100000.0,
                  max_voltage: float = 5):
         self.device_name = device_name
-        self.um_to_volts = um_to_volts
+        self.um_to_volts_DAQ = um_to_volts_DAQ
+        self.um_to_volts_NANO = um_to_volts_NANO 
         self.ao_channels = ao_channels
         self.ci_channel = ci_channel
         self.sample_rate = sample_rate
@@ -76,7 +78,7 @@ class BaseScan(ABC):
 class _NIDAQScanThread(threading.Thread):
     """Thread for NIDAQ scanning operations."""
     
-    def __init__(self, params, line_callbacks,volt_x, volt_y,x_rel, y_rel,x_back_v, y_back_v,
+    def __init__(self, params,line_callbacks,volt_x, volt_y,x_rel, y_rel,x_back_v, y_back_v,
                  samples_per_line: int,
                  total_samples: int,total_center_samples,total_back_samples, line_indices: List[Tuple[int,int]],
                  true_px: int, n_px_acc: int, n_lines: int, config: ScannerConfig,
@@ -189,6 +191,14 @@ class _NIDAQScanThread(threading.Thread):
 
 
     def run(self):
+        chann_asign = {
+                    "XY": {"fast": "Dev1/ao0", "slow": "Dev1/ao1"},
+                    "XZ": {"fast": "Dev1/ao0", "slow": "Dev1/ao2"},
+                    "YZ": {"fast": "Dev1/ao1", "slow": "Dev1/ao2"},
+                }   
+        fast_chan = chann_asign[self.scan_params.scan_type.value]["fast"]
+        slow_chan = chann_asign[self.scan_params.scan_type.value]["slow"]
+
         """Main scanning loop."""
         last_line_last_pixel = None
         processed_data = []
@@ -209,8 +219,8 @@ class _NIDAQScanThread(threading.Thread):
                 
                 with nidaqmx.Task() as ao_task:
                     # Configurar canales AO igual que en el escaneo principal
-                    ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao1")  # Y
-                    ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao0")  # X
+                    ao_task.ao_channels.add_ao_voltage_chan(slow_chan)  # slow
+                    ao_task.ao_channels.add_ao_voltage_chan(fast_chan)  # fast
                     
                     # Configurar timing igual que en el escaneo principal
                     ao_task.timing.cfg_samp_clk_timing(
@@ -241,8 +251,9 @@ class _NIDAQScanThread(threading.Thread):
                 
                 with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
                     # Configure analog output
-                    ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao1", name_to_assign_to_channel="Y")
-                    ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao0", name_to_assign_to_channel="X")
+                    ao_task.ao_channels.add_ao_voltage_chan(slow_chan, name_to_assign_to_channel="slow")
+                    ao_task.ao_channels.add_ao_voltage_chan(fast_chan, name_to_assign_to_channel="fast")
+
                     
                     # Export sample clock for synchronization
                     ao_task.export_signals.export_signal(
@@ -258,10 +269,13 @@ class _NIDAQScanThread(threading.Thread):
                     )
                     
                     # Configure counter input
-                    ci_task.ci_channels.add_ci_count_edges_chan(
+                    ci_chan = ci_task.ci_channels.add_ci_count_edges_chan(
                         f"{self.config.device_name}/{self.config.ci_channel}",
                         edge=Edge.RISING
                     )
+                    ci_chan.ci_count_edges_count_reset_enable = True
+                    ci_chan.ci_count_edges_count_reset_term =  ao_task.timing.samp_clk_term
+                    ci_chan.ci_count_edges_count_reset_active_edge = Edge.RISING
                     
                     # Sync CI with AO sample clock
                     ci_task.timing.cfg_samp_clk_timing(
@@ -473,16 +487,16 @@ class NIDAQScan(BaseScan):
             self._line_callbacks.append(line_callback)
     
     @property
-    def sx(self) -> float:
+    def sfast(self) -> float:
         if not self.scan_params:
             raise AttributeError("scan_params not set")
-        return self.scan_params.line_length_x
+        return self.scan_params.line_length_fast
     
     @property
-    def sy(self) -> float:
+    def sslow(self) -> float:
         if not self.scan_params:
             raise AttributeError("scan_params not set")
-        return self.scan_params.line_length_y
+        return self.scan_params.line_length_slow
 
     def start_scan(self,  params: scan_parameters.RegionScanParameters):
         """Start a new scan with given parameters."""
@@ -503,7 +517,7 @@ class NIDAQScan(BaseScan):
 
     def _validate_scan_params(self, params: scan_parameters.RegionScanParameters) -> bool:
         valid = True
-        if params.line_length_x <= 0 or params.line_length_y <= 0:
+        if params.line_length_fast <= 0 or params.line_length_slow <= 0:
             logging.error("Scan size must be positive")
             valid = False
         if params.dwell_time < 1e-6:
@@ -513,7 +527,7 @@ class NIDAQScan(BaseScan):
             logging.error("Pixel size must be positive")
             valid = False
             
-        if params.line_length_x > 100 or params.line_length_y > 100:
+        if params.line_length_fast > 100 or params.line_length_slow > 100:
             logging.error("Region out of range")
             valid = False
         return valid
@@ -563,7 +577,7 @@ class NIDAQScan(BaseScan):
             except Exception as e:
                 logging.error(f"Stop callback error: {e}")
 
-    def _calculate_parameters(self, scan_width_x: float, scan_width_y: float, pixel_size: float,
+    def _calculate_parameters(self, scan_width_fast: float, scan_width_slow: float, pixel_size: float,
                           dwell_time: float, n_pix: int) -> Tuple:
         """
         Calcula parámetros de escaneo.
@@ -574,7 +588,7 @@ class NIDAQScan(BaseScan):
      DE UNIDADES:
           - pixel_size: metros (m)
           - dwell_time: segundos (s)
-          - scan_width_x/scan_width_y: metros (m)
+          - scan_width_x/scan_width_slow: metros (m)
         Devuelve:
           x0 (m), n_pix, n_acc (muestras), n_acc_min, v_f (m/s), acc (m/s^2), v_f (repetido)
         """
@@ -591,8 +605,8 @@ class NIDAQScan(BaseScan):
     
         # Debug: imprimir entradas (m, s)
         print("DEBUG _calculate_parameters inputs:", file=sys.stderr)
-        print(f"  scan_width_x (m): {scan_width_x}", file=sys.stderr)
-        print(f"  scan_width_y (m): {scan_width_y}", file=sys.stderr)
+        print(f"  scan_width_fast (m): {scan_width_fast}", file=sys.stderr)
+        print(f"  scan_width_slow (m): {scan_width_slow}", file=sys.stderr)
         print(f"  pixel_size (m): {pixel_size}", file=sys.stderr)
         print(f"  dwell_time (s): {dwell_time}", file=sys.stderr)
         print(f"  n_pix: {n_pix}", file=sys.stderr)
@@ -615,7 +629,7 @@ class NIDAQScan(BaseScan):
         print(f"  acc (m/s^2): {acc}", file=sys.stderr)
     
         # Comprobaciones
-        if scan_width_x > 100 or scan_width_y > 100:  # si estas en metros, 100 m es enorme; tal vez querías µm
+        if scan_width_fast > 100 or scan_width_slow > 100:  # si estas en metros, 100 m es enorme; tal vez querías µm
             self._execute_scan_stop_callbacks()
             raise ValueError("Region out of range")
     
@@ -628,26 +642,26 @@ class NIDAQScan(BaseScan):
             raise ValueError("number of pixels out of range")
     
         # x0: distancia recorrida durante la aceleración (en metros)
-        x0 = 0.5 * acc * ((n_acc * dwell_time) ** 2)
+        fast0 = 0.5 * acc * ((n_acc * dwell_time) ** 2)
     
-        return x0, n_pix, n_acc, n_acc_min, v_f, acc, v_f
+        return fast0, n_pix, n_acc, n_acc_min, v_f, acc, v_f
             
         
             
-    def update_current_position(self, x: float, y: float):
+    def update_current_position(self, fast: float, slow: float):
         """Actualiza la posición actual del escáner."""
-        self.current_position = np.array([x, y])
-        logging.info(f"Posición actual actualizada: ({x}, {y}) µm")
+        self.current_position = np.array([fast, slow])
+        logging.info(f"Posición actual actualizada: ({fast}, {slow}) µm")
 
     def _create_scan_thread(self) -> _NIDAQScanThread:
-        """Create and configure scan thread with voltage clamping."""
+       
         # Convertir todo a metros consistentemente
         params = self.scan_params
         dwell_time = float(params.dwell_time * 1E-3)  # ms -> s
         px_size = float(params.pixel_size * 1E-6)     # µm -> m
-        sx = float(params.line_length_x * 1E-6)       # µm -> m
-        sy = float(params.line_length_y * 1E-6)       # µm -> m
-        start_y = float(params.start_point[1] * 1E-6) # µm -> m
+        sfast = float(params.line_length_fast * 1E-6)       # µm -> m
+        sslow = float(params.line_length_slow * 1E-6)       # µm -> m
+        start_slow = float(params.start_point[1] * 1E-6) # µm -> m
         n_pix = int(params.true_px_num)
        
         required_sample_rate = 1.0 / (dwell_time)
@@ -655,140 +669,145 @@ class NIDAQScan(BaseScan):
         # Crear configuración temporal para el thread
         thread_config = ScannerConfig(
             device_name=self.config.device_name,
-            um_to_volts=self.config.um_to_volts,
+            um_to_volts_DAQ=self.config.um_to_volts_DAQ,
+            um_to_volts_NANO = self.config.um_to_volts_NANO,
             ao_channels=self.config.ao_channels,
             ci_channel=self.config.ci_channel,
             sample_rate=required_sample_rate,  # Usar el nuevo sample rate
             max_voltage=self.config.max_voltage
         )
       
-        
+        chann_asign = {
+                    "XY": {"fast": self.config.um_to_volts_DAQum_to_volts_DAQ, "slow":self.config.um_to_volts_DAQ},
+                    "XZ": {"fast": self.config.um_to_volts_DAQ, "slow": self.config.um_to_volts_NANO},
+                    "YZ": {"fast": self.config.um_to_volts_DAQ,"slow": self.config.um_to_volts_NANO}}
+                
         
         
         # Calcular parámetros
-        x0, true_px, n_px_acc, _, v_f, acc, _ = self._calculate_parameters(
-            sx,sy,px_size, dwell_time,n_pix
+        fast0, true_px, n_px_acc, _, v_f, acc, _ = self._calculate_parameters(
+            sfast,sslow,px_size, dwell_time,n_pix
         )
-        print(x0)
+        print(fast0)
        
-        # generar recentrado solo si hay center en params
+        # generar recentrado solo si haslow center en params
         # x_0, y_0 = self.current_position
         center = getattr(params, "center", None)
         reloc_signal = None
        
         if center is not None:
             # Preferir prev_center si existe (centro anterior en µm)
-            x_f_um = copy.deepcopy(params.start_point[0]*1E-6)
-            y_f_um = copy.deepcopy(2*params.end_point[1]*1E-6)
+            fast_f_um = copy.deepcopy(params.start_point[0]*1E-6)
+            slow_f_um = copy.deepcopy(2*params.end_point[1]*1E-6)
             # x_f_um = params.start_point[0]*2
             # y_f_um =  params.start_point[1]*2
             
             
         
-            t_rel, x_rel_um, y_rel_um, n_rel = self.move_to_center_scan(
+            t_rel, fast_rel_um, slow_rel_um, n_rel = self.move_to_center_scan(
             0.0,
-            x_f_um, 
-            y_f_um,
+            fast_f_um, 
+            slow_f_um,
             dwell_time,
-            a_max_x=acc, 
-            a_max_y=acc
+            a_max_fast=acc, 
+            a_max_slow=acc
                         )
                 # convertir a V (si config.um_to_volts es V/µm)
-            x_rel_v = x_rel_um * self.config.um_to_volts*1E6
-            y_rel_v = y_rel_um * self.config.um_to_volts*1E6
-            print(x_rel_v)
-            print(y_rel_v)
+            fast_rel_v = fast_rel_um * self.config.um_to_volts*1E6
+            slow_rel_v = slow_rel_um * self.config.um_to_volts*1E6
+            print(fast_rel_v)
+            print(slow_rel_v)
             
         
             # asegurar al menos 2 puntos
-            if x_rel_v.size < 2:
-                x_rel_v = np.pad(x_rel_v, (0, 2 - x_rel_v.size), mode='edge')
-            if y_rel_v.size < 2:
-                y_rel_v = np.pad(y_rel_v, (0, 2 - y_rel_v.size), mode='edge')
+            if fast_rel_v.size < 2:
+                fast_rel_v = np.pad(fast_rel_v, (0, 2 - fast_rel_v.size), mode='edge')
+            if slow_rel_v.size < 2:
+                slow_rel_v = np.pad(slow_rel_v, (0, 2 - slow_rel_v.size), mode='edge')
         
             # clip por seguridad
-            x_rel_v = np.clip(x_rel_v, -self.config.max_voltage, self.config.max_voltage)
-            y_rel_v = np.clip(y_rel_v, -self.config.max_voltage, self.config.max_voltage)
-            self.update_current_position(x_f_um,y_f_um)
-        if sy>sx:
-            n_lines =  int(sy / (px_size))      
+            fast_rel_v = np.clip(fast_rel_v, -self.config.max_voltage, self.config.max_voltage)
+            slow_rel_v = np.clip(slow_rel_v, -self.config.max_voltage, self.config.max_voltage)
+            self.update_current_position(fast_f_um,slow_f_um)
+        if sslow>sfast:
+            n_lines =  int(sslow / (px_size))      
         else:
-            n_lines = int(sx / px_size)
+            n_lines = int(sfast / px_size)
        
         # --- Asumo: x_rel_um, y_rel_um están en metros (rename para claridad) ---
-        x_rel_m = x_rel_um    # si realmente son metros
-        y_rel_m = y_rel_um
+        fast_rel_m = fast_rel_um    # si realmente son metros
+        slow_rel_m = slow_rel_um
         
         # Asegurar >=2 puntos (en metros)
-        if x_rel_m.size < 2:
-            x_rel_m = np.pad(x_rel_m, (0, 2 - x_rel_m.size), mode='edge')
-        if y_rel_m.size < 2:
-            y_rel_m = np.pad(y_rel_m, (0, 2 - y_rel_m.size), mode='edge')
+        if fast_rel_m.size < 2:
+            fast_rel_m = np.pad(fast_rel_m, (0, 2 - fast_rel_m.size), mode='edge')
+        if slow_rel_m.size < 2:
+            slow_rel_m = np.pad(slow_rel_m, (0, 2 - slow_rel_m.size), mode='edge')
         
         # Trajectoria de escaneo: escaneo2D_back devuelve arrays en metros (supuesto)
-        t, scan_x_m, scan_y_m, samples_per_line = self.escaneo2D_back(
-            n_lines, x0 , params.end_point[1]*1E-6, dwell_time, n_px_acc, true_px, acc, v_f, px_size
+        t, scan_fast_m, scan_slow_m, samples_per_line = self.escaneo2D_back(
+            n_lines, fast0 , params.end_point[1]*1E-6, dwell_time, n_px_acc, true_px, acc, v_f, px_size
         )
         
         # --- CALCULAR OFFSETS EN METROS para asegurar continuidad ---
         # último punto del recentrado (en metros)
-        last_center_x_m = x_rel_m[-1]
-        last_center_y_m = y_rel_m[-1]
+        last_center_fast_m = fast_rel_m[-1]
+        last_center_slow_m = slow_rel_m[-1]
         
         # offset para que el primer punto del escaneo coincida con final del recentrado
-        offset_scan_x_m = last_center_x_m - scan_x_m[0]
-        offset_scan_y_m = last_center_y_m - scan_y_m[0]
+        offset_scan_fast_m = last_center_fast_m - scan_fast_m[0]
+        offset_scan_slow_m = last_center_slow_m - scan_slow_m[0]
         
         # aplicar offset (en metros)
-        scan_x_m_shifted = scan_x_m + offset_scan_x_m
-        scan_y_m_shifted = scan_y_m + offset_scan_y_m
+        scan_fast_m_shifted = scan_fast_m + offset_scan_fast_m
+        scan_slow_m_shifted = scan_slow_m + offset_scan_slow_m
         
         # ahora generar vuelta al origen (back) en metros
-        t_back, back_x_m, back_y_m, n_back = self.move_to_center_scan(
-            0.0, 0, 0, dwell_time, a_max_x=acc, a_max_y=acc
+        t_back, back_fast_m, back_slow_m, n_back = self.move_to_center_scan(
+            0.0, 0, 0, dwell_time, a_max_fast=acc, a_max_slow=acc
         )
         self.update_current_position(0,0)
         # offset para que el primer punto de la vuelta coincida con el último punto del escaneo
-        last_scan_x_m = scan_x_m_shifted[-1]
-        last_scan_y_m = scan_y_m_shifted[-1]
-        offset_back_x_m = last_scan_x_m - back_x_m[0]
-        offset_back_y_m = last_scan_y_m - back_y_m[0]
+        last_scan_fast_m = scan_fast_m_shifted[-1]
+        last_scan_slow_m = scan_slow_m_shifted[-1]
+        offset_back_fast_m = last_scan_fast_m - back_fast_m[0]
+        offset_back_slow_m = last_scan_slow_m - back_slow_m[0]
         
-        back_x_m_shifted = back_x_m + offset_back_x_m
-        back_y_m_shifted = back_y_m + offset_back_y_m
+        back_fast_m_shifted = back_fast_m + offset_back_fast_m
+        back_slow_m_shifted = back_slow_m + offset_back_slow_m
         
         # --- Convertir todo a voltios UNA VEZ (V/µm * 1e6 µm/m) ---
         conv = self.config.um_to_volts * 1e6
-        x_rel_v = x_rel_m * conv
-        y_rel_v = y_rel_m * conv
+        fast_rel_v = fast_rel_m * conv
+        slow_rel_v = slow_rel_m * conv
         
-        volt_x = scan_x_m_shifted * conv
-        volt_y = scan_y_m_shifted * conv
+        volt_fast = scan_fast_m_shifted * conv
+        volt_slow = scan_slow_m_shifted * conv
         
-        x_back_v = back_x_m_shifted * conv
-        y_back_v = back_y_m_shifted * conv
+        fast_back_v = back_fast_m_shifted * conv
+        slow_back_v = back_slow_m_shifted * conv
         
         # Clipping
-        volt_x = np.clip(volt_x, -self.config.max_voltage, self.config.max_voltage)
-        volt_y = np.clip(volt_y, -self.config.max_voltage, self.config.max_voltage)
-        x_rel_v = np.clip(x_rel_v, -self.config.max_voltage, self.config.max_voltage)
-        y_rel_v = np.clip(y_rel_v, -self.config.max_voltage, self.config.max_voltage)
-        x_back_v = np.clip(x_back_v, -self.config.max_voltage, self.config.max_voltage)
-        y_back_v = np.clip(y_back_v, -self.config.max_voltage, self.config.max_voltage)
+        volt_fast = np.clip(volt_fast, -self.config.max_voltage, self.config.max_voltage)
+        volt_slow = np.clip(volt_slow, -self.config.max_voltage, self.config.max_voltage)
+        fast_rel_v = np.clip(fast_rel_v, -self.config.max_voltage, self.config.max_voltage)
+        slow_rel_v = np.clip(slow_rel_v, -self.config.max_voltage, self.config.max_voltage)
+        fast_back_v = np.clip(fast_back_v, -self.config.max_voltage, self.config.max_voltage)
+        slow_back_v = np.clip(slow_back_v, -self.config.max_voltage, self.config.max_voltage)
         
         # --- Comprobaciones rápidas ---
-        print("Continuidad center->scan (V):", x_rel_v[-1], volt_x[0], "diff:", x_rel_v[-1]-volt_x[0])
-        print("Continuidad scan->back (V):", volt_x[-1], x_back_v[0], "diff:", volt_x[-1]-x_back_v[0])
+        print("Continuidad center->scan (V):", fast_rel_v[-1], volt_fast[0], "diff:", fast_rel_v[-1]-volt_fast[0])
+        print("Continuidad scan->back (V):", volt_fast[-1], fast_back_v[0], "diff:", volt_fast[-1]-fast_back_v[0])
         
         # Asserts (opcional, lanzar error si no coincide dentro de tol)
         tol = 1e-6
-        assert np.allclose(x_rel_v[-1], volt_x[0], atol=tol), "No coincide X center->scan"
-        assert np.allclose(y_rel_v[-1], volt_y[0], atol=tol), "No coincide Y center->scan"
-        assert np.allclose(volt_x[-1], x_back_v[0], atol=tol), "No coincide X scan->back"
-        assert np.allclose(volt_y[-1], y_back_v[0], atol=tol), "No coincide Y scan->back"
-        total_samples = len(volt_x)
-        total_center_samples = len(x_rel_v)
-        total_back_samples = len(x_back_v)
+        assert np.allclose(fast_rel_v[-1], volt_fast[0], atol=tol), "No coincide fast center->scan"
+        assert np.allclose(slow_rel_v[-1], volt_slow[0], atol=tol), "No coincide slow center->scan"
+        assert np.allclose(volt_fast[-1], fast_back_v[0], atol=tol), "No coincide fast scan->back"
+        assert np.allclose(volt_slow[-1], slow_back_v[0], atol=tol), "No coincide slow scan->back"
+        total_samples = len(volt_fast)
+        total_center_samples = len(fast_rel_v)
+        total_back_samples = len(fast_back_v)
         #  # construir line_indices igual que antes
         line_indices = [(i * samples_per_line, (i + 1) * samples_per_line) for i in range(n_lines)]
                 
@@ -845,21 +864,21 @@ class NIDAQScan(BaseScan):
             plt.tight_layout()
             plt.show()
         if len(t_rel) > 1:
-              muestra_escaneo("Voltajes de recentrado",t_rel,x_rel_v,y_rel_v)
-        muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_x, volt_y)
+              muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
+        muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
         if len(t_back) > 1:
-                muestra_escaneo("Voltajes de vuelta al origen",t_back,x_back_v,y_back_v)
+                muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
        
-        # devolver/crear thread pasando solo señales ya procesadas:
+        # devolver/crear thread pasando solo señales slowa procesadas:
         return _NIDAQScanThread(
             params=params,
             line_callbacks=self._line_callbacks,
-            volt_x = volt_x,
-            volt_y = volt_y,
-            x_rel = x_rel_v,
-            y_rel = y_rel_v,
-            x_back_v = x_back_v,
-            y_back_v = y_back_v,
+            volt_fast = volt_fast,
+            volt_slow = volt_slow,
+            fast_rel = fast_rel_v,
+            slow_rel = slow_rel_v,
+            fast_back_v = fast_back_v,
+            slow_back_v = slow_back_v,
             samples_per_line=samples_per_line,
             total_samples=total_samples,
             line_indices=line_indices,
@@ -888,119 +907,119 @@ class NIDAQScan(BaseScan):
         #     config=thread_config
         # )
 
-    def finish_scan(self, t_0: float, x_0: float, y_0: float,
-                  x_f: float, y_f: float, dwell_time: float,
-                  a_max_x: float, a_max_y: float) -> Tuple:
+    def finish_scan(self, t_0: float, fast_0: float, slow_0: float,
+                  fast_f: float, slow_f: float, dwell_time: float,
+                  a_max_fast: float, a_max_slow: float) -> Tuple:
         """Generate flyback trajectory."""
-        dx = abs(x_f - x_0)
-        dy = abs(y_f- y_0)
-        t_x = 2 * np.sqrt(dx / a_max_x)
-        t_y = 2 * np.sqrt(dy / a_max_y)
+        dfast = abs(fast_f - fast_0)
+        dslow = abs(slow_f- slow_0)
+        t_fast = 2 * np.sqrt(dfast / a_max_fast)
+        t_slow = 2 * np.sqrt(dslow / a_max_slow)
         
-        a_x = a_max_x
-        a_y = a_max_y
-        t_total = max(t_x, t_y)
+        a_fast = a_max_fast
+        a_slow = a_max_slow
+        t_total = max(t_fast, t_slow)
         
         t_end = t_total + t_0
         t = np.arange(t_0, t_end + dwell_time, dwell_time)
         n_points = len(t)
         t_half = t_total / 2
-        x_back = np.zeros(n_points)
-        y_back = np.zeros(n_points)
-        s_x = 1 if x_f > x_0 else -1
-        s_y = 1 if y_f > y_0 else -1
+        fast_back = np.zeros(n_points)
+        slow_back = np.zeros(n_points)
+        s_fast = 1 if fast_f > fast_0 else -1
+        s_slow = 1 if slow_f > slow_0 else -1
         t_rel = t - t_0
         
         # First half of movement
         mask1 = t_rel < t_half
         t1 = t_rel[mask1]
-        x_back[mask1] = x_0 + 0.5 * s_x * a_x * t1**2
-        y_back[mask1] = y_0 + 0.5 * s_y * a_y * t1**2
+        fast_back[mask1] = fast_0 + 0.5 * s_fast * a_fast * t1**2
+        slow_back[mask1] = slow_0 + 0.5 * s_slow * a_slow * t1**2
         
         # Second half of movement
         mask2 = t_rel >= t_half
         t2 = t_rel[mask2] - t_half
-        v_y = a_y * t_half
+        v_slow = a_slow * t_half
         
-        x_back = np.full_like(t, x_0)
+        fast_back = np.full_like(t, fast_0)
         
-        y_back[mask2] = (y_0 + 0.5 * s_y * a_y * t_half**2 +
-                          s_y * v_y * t2 - 0.5 * s_y * a_y * t2**2)
+        slow_back[mask2] = (slow_0 + 0.5 * s_slow * a_slow * t_half**2 +
+                          s_slow * v_slow * t2 - 0.5 * s_slow * a_slow * t2**2)
         
-        return t, x_back, y_back, n_points
+        return t, fast_back, slow_back, n_points
     
     def move_to_center_scan(self, t_0,
-                        x_f: float, y_f: float, dwell_time: float,
-                        a_max_x: float, a_max_y: float) -> Tuple:
+                        fast_f: float, slow_f: float, dwell_time: float,
+                        a_max_fast: float, a_max_slow: float) -> Tuple:
         """Generate flyback trajectory with independent axis timing."""
-        x_0, y_0 = self.current_position
-        dx = abs(x_f - x_0)
-        dy = abs(y_f - y_0)
+        fast_0, slow_0 = self.current_position
+        dfast = abs(fast_f - fast_0)
+        dslow = abs(slow_f - slow_0)
     
         # Tiempo de movimiento para cada eje
-        t_x = 2 * np.sqrt(dx / a_max_x) if dx > 0 else 0.0
-        t_y = 2 * np.sqrt(dy / a_max_y) if dy > 0 else 0.0
+        t_fast = 2 * np.sqrt(dfast / a_max_fast) if dfast > 0 else 0.0
+        t_slow = 2 * np.sqrt(dslow / a_max_slow) if dslow > 0 else 0.0
     
         # Signos de movimiento
-        s_x = np.sign(x_f - x_0) if dx > 0 else 0
-        s_y = np.sign(y_f - y_0) if dy > 0 else 0
+        s_fast = np.sign(fast_f - fast_0) if dfast > 0 else 0
+        s_slow = np.sign(slow_f - slow_0) if dslow > 0 else 0
     
         # Tiempo total = el más largo de ambos
-        t_total = max(t_x, t_y)
+        t_total = max(t_fast, t_slow)
         t_end = t_0 + t_total
         t = np.arange(t_0, t_end + dwell_time, dwell_time)
         n_points = len(t)
     
-        x_back = np.empty_like(t)
-        y_back = np.empty_like(t)
+        fast_back = np.empty_like(t)
+        slow_back = np.empty_like(t)
     
         # --- EJE X ---
-        if s_x == 0:
+        if s_fast == 0:
             # Sin movimiento
-            x_back[:] = x_0
+            fast_back[:] = fast_0
         else:
-            t_half_x = t_x / 2
-            mask_move_x = (t - t_0) < t_x
-            mask1_x = (t - t_0) < t_half_x
-            mask2_x = mask_move_x & ~mask1_x
+            t_half_fast = t_fast / 2
+            mask_move_fast = (t - t_0) < t_fast
+            mask1_fast = (t - t_0) < t_half_fast
+            mask2_fast = mask_move_fast & ~mask1_fast
     
             # Aceleración
-            t1 = (t - t_0)[mask1_x]
-            x_back[mask1_x] = x_0 + 0.5 * s_x * a_max_x * t1**2
+            t1 = (t - t_0)[mask1_fast]
+            fast_back[mask1_fast] = fast_0 + 0.5 * s_fast * a_max_fast * t1**2
     
             # Desaceleración
-            t2 = (t - t_0)[mask2_x] - t_half_x
-            v_x = a_max_x * t_half_x
-            x_back[mask2_x] = (x_0 + 0.5 * s_x * a_max_x * t_half_x**2 +
-                               s_x * v_x * t2 - 0.5 * s_x * a_max_x * t2**2)
+            t2 = (t - t_0)[mask2_fast] - t_half_fast
+            v_fast = a_max_fast * t_half_fast
+            fast_back[mask2_fast] = (fast_0 + 0.5 * s_fast * a_max_fast * t_half_fast**2 +
+                               s_fast * v_fast * t2 - 0.5 * s_fast * a_max_fast * t2**2)
     
             # Mantener en destino tras finalizar
-            x_back[~mask_move_x] = x_f
+            fast_back[~mask_move_fast] = fast_f
     
         # --- EJE Y ---
-        if s_y == 0:
-            y_back[:] = y_0
+        if s_slow == 0:
+            slow_back[:] = slow_0
         else:
-            t_half_y = t_y / 2
-            mask_move_y = (t - t_0) < t_y
-            mask1_y = (t - t_0) < t_half_y
-            mask2_y = mask_move_y & ~mask1_y
+            t_half_slow = t_slow / 2
+            mask_move_slow = (t - t_0) < t_slow
+            mask1_slow = (t - t_0) < t_half_slow
+            mask2_slow = mask_move_slow & ~mask1_slow
     
-            t1 = (t - t_0)[mask1_y]
-            y_back[mask1_y] = y_0 + 0.5 * s_y * a_max_y * t1**2
+            t1 = (t - t_0)[mask1_slow]
+            slow_back[mask1_slow] = slow_0 + 0.5 * s_slow * a_max_slow * t1**2
     
-            t2 = (t - t_0)[mask2_y] - t_half_y
-            v_y = a_max_y * t_half_y
-            y_back[mask2_y] = (y_0 + 0.5 * s_y * a_max_y * t_half_y**2 +
-                               s_y * v_y * t2 - 0.5 * s_y * a_max_y * t2**2)
+            t2 = (t - t_0)[mask2_slow] - t_half_slow
+            v_slow = a_max_slow * t_half_slow
+            slow_back[mask2_slow] = (slow_0 + 0.5 * s_slow * a_max_slow * t_half_slow**2 +
+                               s_slow * v_slow * t2 - 0.5 * s_slow * a_max_slow * t2**2)
     
-            y_back[~mask_move_y] = y_f
+            slow_back[~mask_move_slow] = slow_f
     
         
    
-        return t, x_back, y_back, n_points
+        return t, fast_back, slow_back, n_points
 
-    def escaneo2D_back(self, n_lines: int, x_0: float, y_0: float,
+    def escaneo2D_back(self, n_lines: int, fast_0: float, slow_0: float,
                      dwell_time: float, n_pix_acc: int, n_pix: int,
                      acc: float, v_f: float,px_size):
         if n_pix_acc <= 0 or n_pix <= 0:
@@ -1010,41 +1029,41 @@ class NIDAQScan(BaseScan):
         t_local = np.arange(0, t_line_duration , dwell_time)
         idx_pix = np.arange(len(t_local))
         n_points = 4 * n_pix_acc  + 2 * n_pix 
-        v_y = v_f / 2
+        v_slow = v_f / 2
 
-        x = np.zeros_like(t_local)
-        y = np.full_like(t_local, y_0)  # Constant Y for entire line
+        fast = np.zeros_like(t_local)
+        slow = np.full_like(t_local, slow_0)  # Constant slow for entire line
 
 
         # Aceleración inicial
         mask1 = idx_pix < n_pix_acc
-        x[mask1] = -x_0 + 0.5 * acc * (idx_pix[mask1] * dwell_time) ** 2
+        fast[mask1] = -fast_0 + 0.5 * acc * (idx_pix[mask1] * dwell_time) ** 2
 
         # Velocidad constante
         mask2 = (idx_pix >= n_pix_acc) & (idx_pix <= n_pix + n_pix_acc)
-        x[mask2] = -x_0 + 0.5 * acc * ((n_pix_acc * dwell_time) ** 2) + v_f * (idx_pix[mask2] - n_pix_acc) * dwell_time
+        fast[mask2] = -fast_0 + 0.5 * acc * ((n_pix_acc * dwell_time) ** 2) + v_f * (idx_pix[mask2] - n_pix_acc) * dwell_time
 
         # Deceleración positiva
         mask3 = (idx_pix > n_pix + n_pix_acc) & (idx_pix <= n_pix + 2 * n_pix_acc)
         t_dec = (idx_pix[mask3] - (n_pix + n_pix_acc)) * dwell_time
-        x[mask3] = (-x_0 + 0.5 * acc * ((n_pix_acc * dwell_time) ** 2) +
+        fast[mask3] = (-fast_0 + 0.5 * acc * ((n_pix_acc * dwell_time) ** 2) +
                     v_f * n_pix * dwell_time + v_f * t_dec - 0.5 * acc * t_dec ** 2)
 
         # Aceleración negativa
         mask4 = (idx_pix >= n_pix + 2 * n_pix_acc) & (idx_pix < n_pix + 3 * n_pix_acc)
         t_acc_neg = (idx_pix[mask4] - (n_pix + 2 * n_pix_acc)) * dwell_time
-        x[mask4] = x_0 + v_f * (n_pix * dwell_time) - 0.5 * acc * (t_acc_neg) ** 2
+        fast[mask4] = fast_0 + v_f * (n_pix * dwell_time) - 0.5 * acc * (t_acc_neg) ** 2
 
         # Velocidad negativa
         mask5 = (idx_pix >= n_pix + 3 * n_pix_acc) & (idx_pix <= 2 * n_pix + 3 * n_pix_acc)
-        x[mask5] = (x_0 + v_f * (n_pix * dwell_time) -
+        fast[mask5] = (fast_0 + v_f * (n_pix * dwell_time) -
                     0.5 * acc * ((n_pix_acc * dwell_time) ** 2) -
                     v_f * (idx_pix[mask5] - (n_pix + 3 * n_pix_acc)) * dwell_time)
 
         # Deceleración final
         mask6 = (2 * n_pix + 4 * n_pix_acc >= idx_pix) & (idx_pix >= 2 * n_pix + 3 * n_pix_acc)
         t_dec_final = (idx_pix[mask6] - (2 * n_pix + 3 * n_pix_acc)) * dwell_time
-        x[mask6] = (x_0 + v_f * (n_pix * dwell_time) -
+        fast[mask6] = (fast_0 + v_f * (n_pix * dwell_time) -
                     0.5 * acc * ((n_pix_acc * dwell_time) ** 2) -
                     v_f * n_pix * dwell_time - v_f * t_dec_final +
                     0.5 * acc * t_dec_final ** 2)
@@ -1055,41 +1074,41 @@ class NIDAQScan(BaseScan):
         t_offsets = np.arange(n_lines) * num_points * dwell_time
         t_total = np.tile(t_local, n_lines) + np.repeat(t_offsets, num_points)  
 
-        x_total = np.tile(x, n_lines)
+        fast_total = np.tile(fast, n_lines)
         # x_total -= (x_total.max() + x_total.min()) / 2
 
-        y_step =  px_size
-        y_shifts = y_0 - np.arange(n_lines) * y_step
-        y_offsets = np.repeat(y_shifts, num_points)
-        # y_total = np.tile(np.ones_like(y)*y_0, n_lines) + y_offsets
-        y_total = np.tile(y, n_lines) + (y_offsets - y_0)
-        # y_total -= (y_total.max() + y_total.min()) / 2
+        slow_step =  px_size
+        slow_shifts = slow_0 - np.arange(n_lines) * slow_step
+        slow_offsets = np.repeat(slow_shifts, num_points)
+        # slow_total = np.tile(np.ones_like(slow)*slow_0, n_lines) + slow_offsets
+        slow_total = np.tile(slow, n_lines) + (slow_offsets - slow_0)
+        # slow_total -= (slow_total.max() + slow_total.min()) / 2
        
 
-        # le pido que n_lineso haga una subida mas en y
-        # y_total[-num_points:] = y_total[-num_points - 1]
+        # le pido que n_lineso haga una subida mas en slow
+        # slow_total[-num_points:] = slow_total[-num_points - 1]
 
         
-        last_x = x_total[-1]
-        last_y = y_total[-1]
+        last_fast = fast_total[-1]
+        last_slow = slow_total[-1]
         last_t = t_total[-1]
         
       
         
-        # Garantizar que el último punto sea exactamente y_0
+        # Garantizar que el último punto sea exactamente slow_0
         
-        t_back, x_back, y_back,_ = self.finish_scan(last_t, last_x, last_y, x_0, y_0,dwell_time, acc, acc)
+        t_back, fast_back, slow_back,_ = self.finish_scan(last_t, last_fast, last_slow, fast_0, slow_0,dwell_time, acc, acc)
 
         # Concatenar la vuelta
         t_total = np.concatenate([t_total, t_back])
-        x_total = np.concatenate([x_total, x_back])
-        y_total = np.concatenate([y_total, y_back])
-        # y_total -= (y_total.max() + y_total.min()) / 2
-        # y_total[-num_points:] = y_total[-num_points]
+        fast_total = np.concatenate([fast_total, fast_back])
+        slow_total = np.concatenate([slow_total, slow_back])
+        # slow_total -= (slow_total.max() + slow_total.min()) / 2
+        # slow_total[-num_points:] = slow_total[-num_points]
         # x_total -= (x_total.max() + x_total.min()) / 2
 
 
-        return t_total, x_total, y_total, int(n_points)
+        return t_total, fast_total, slow_total, int(n_points)
         
       
 
@@ -1097,12 +1116,12 @@ class NIDAQScan(BaseScan):
         """Get scan data dimensions."""
         if not self.scan_params:
             return (0, 0)
-        return (int(self.sx / self.scan_params.pixel_size),
-                int(self.sy / self.scan_params.pixel_size))
+        return (int(self.sfast / self.scan_params.pixel_size),
+                int(self.sslow / self.scan_params.pixel_size))
 
     def get_extents(self) -> Tuple[Tuple[float, float], Tuple[float, float]]:
         """Get scan extents in physical units."""
         if not self.scan_params:
             return ((0, 0), (0, 0))
-        return ((0, self.sx), 
-                (0, self.sy))
+        return ((0, self.sfast), 
+                (0, self.sslow))
