@@ -703,13 +703,13 @@ class FrontEnd(QMainWindow):
         frame = np.copy(self.imagen)
         self.last_frame = frame  # Store the last completed frame
         self._map_window.add_region(frame,
-                                  self._scan_params.line_length_x,
+                                  self._scan_params.line_length_fast,
                                   self._scan_params.center,
                                   self._scan_params.dwell_time)
 
         # FIXME: check size
         frame /= self._scan_params.dwell_time  # Normalize
-        frame_range = self._scan_params.line_length_x
+        frame_range = self._scan_params.line_length_fast
 
         frame_center = np.array(self._center[
             _scantype_axes_map[self._scan_params.scan_type]
@@ -784,7 +784,7 @@ class FrontEnd(QMainWindow):
             # self.last_frame = self.normalize_image(self.imagen)
             self._map_window.add_region(
             frame,
-            self._scan_params.line_length_x,
+            self._scan_params.line_length_fast,
             self._scan_params.center,
             self._scan_params.dwell_time )
             # Normalizar y procesar
@@ -810,14 +810,14 @@ class FrontEnd(QMainWindow):
             # TODO: remove update=False used for debugging
             # El centro del pixel es lo que nos importa, hacemos shift
             # el ROI inicial es 1/4 más chico que la imagen
-            crop = (self._scan_params.line_length_x / 8.,
-                    self._scan_params.line_length_y / 8)
+            crop = (self._scan_params.line_length_fast / 8.,
+                    self._scan_params.line_length_slow / 8)
             shifted_pos = [p - self._scan_params.pixel_size / 2 + s for
                            p, s in zip(self._scan_params.start_point, crop)]
             self._ROI.setPos(shifted_pos, update=False)
             self._ROI.setSize(
-                (self._scan_params.line_length_x ,
-                 self._scan_params.line_length_y ),
+                (self._scan_params.line_length_fast ,
+                 self._scan_params.line_length_slow ),
                 update=True,
             )
             self._ROI.show()
