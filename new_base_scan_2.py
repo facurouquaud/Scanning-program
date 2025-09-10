@@ -78,7 +78,7 @@ class BaseScan(ABC):
 class _NIDAQScanThread(threading.Thread):
     """Thread for NIDAQ scanning operations."""
     
-    def __init__(self, params,line_callbacks,volt_x, volt_y,x_rel, y_rel,x_back_v, y_back_v,
+    def __init__(self, params,line_callbacks,volt_fast, volt_slow,fast_rel, slow_rel,fast_back_v, slow_back_v,
                  samples_per_line: int,
                  total_samples: int,total_center_samples,total_back_samples, line_indices: List[Tuple[int,int]],
                  true_px: int, n_px_acc: int, n_lines: int, config: ScannerConfig,
@@ -91,12 +91,12 @@ class _NIDAQScanThread(threading.Thread):
         self._stop_event = threading.Event()
         self._error_occurred = False
         self.n_px_acc = n_px_acc
-        self.volt_x = volt_x
-        self.volt_y = volt_y
-        self.x_rel = x_rel
-        self.y_rel = y_rel
-        self.x_back_v = x_back_v
-        self.y_back_v = y_back_v
+        self.volt_fast = volt_fast
+        self.volt_slow = volt_slow
+        self.fast_rel = fast_rel
+        self.slow_rel = slow_rel
+        self.fast_back_v = fast_back_v
+        self.slow_back_v = slow_back_v
         self.total_back_samples = total_back_samples
         self.true_px = true_px
      
@@ -107,7 +107,8 @@ class _NIDAQScanThread(threading.Thread):
       
 
         # Validate voltage ranges
-        max_physical = config.max_voltage / config.um_to_volts
+        max_physical_DAQ = config.max_voltage / config.um_to_volts_DAQ
+        max_physical_NANO = config.max_voltage / config.um_to_volts_NANO
         # self.volt_x = np.clip(volt_x.copy(), -max_physical, max_physical) * config.um_to_volts
         # self.volt_y = np.clip(volt_y.copy(), -max_physical, max_physical) * config.um_to_volts
         # self.t = t
@@ -116,16 +117,16 @@ class _NIDAQScanThread(threading.Thread):
 
         # Validación adicional
         
-        if np.max(np.abs(self.volt_x)) > config.max_voltage:
-             actual_max = np.max(np.abs(self.volt_x))
+        if np.max(np.abs(self.volt_fast)) > config.max_voltage:
+             actual_max = np.max(np.abs(self.volt_fast))
              raise ValueError(
                  f"Voltaje X excede {config.max_voltage}V (llegó a {actual_max:.2f}V)\n"
-                 f"Revisar um_to_volts (actual: {config.um_to_volts}) y tamaño de escaneo"
+                 f"Revisar um_to_volts (actual: {config.um_to_volts_DAQ}) y tamaño de escaneo"
              )
         self.samples_per_line = samples_per_line
         self.n_lines = n_lines
         self.config = config
-        self.total_samples = len(self.volt_x)
+        self.frames_samples = len(self.volt_fast)
         self.total_center_samples =  total_center_samples
         # Pre-calculate line indices
         self.line_indices = [
@@ -136,10 +137,10 @@ class _NIDAQScanThread(threading.Thread):
 
     def _validate_voltage(self, max_voltage: float):
         """Ensure voltages are within DAQ limits with detailed logging."""
-        x_min = np.min(self.volt_x)
-        x_max = np.max(self.volt_x)
-        y_min = np.min(self.volt_y)
-        y_max = np.max(self.volt_y)
+        x_min = np.min(self.volt_fast)
+        x_max = np.max(self.volt_fast)
+        y_min = np.min(self.volt_slow)
+        y_max = np.max(self.volt_slow)
        
         if x_max > max_voltage or x_min < -max_voltage:
             logging.error(f"X voltage out of range: min={x_min:.2f}V, max={x_max:.2f}V, "
@@ -205,38 +206,64 @@ class _NIDAQScanThread(threading.Thread):
         
         # Precompute center and flyback samples as integers
         center_samples = int(round(self.total_center_samples))
-        flyback_samples = self.total_samples - center_samples - (self.n_lines * self.samples_per_line)
+        flyback_samples = self.frames_samples - (self.n_lines * self.samples_per_line) 
         
         # Ensure flyback_samples is non-negative
         flyback_samples = max(0, flyback_samples)
-        back_samples = self.total_back_samples
         
         # AO-only relocation - Mismo enfoque que el escaneo principal
-        if self.x_rel is not None and self.y_rel is not None:
+        if self.fast_back_v is not None and self.slow_back_v is not None:
             try:
-                xy_reloc_signal = np.vstack((self.y_back_v, self.x_back_v))
-                n_reloc_samples = len(self.x_back_v)
+                xy_reloc_signal = np.vstack((self.slow_back_v, self.fast_back_v))
+                n_reloc_samples = len(self.fast_back_v)
                 
-                with nidaqmx.Task() as ao_task:
+                with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
                     # Configurar canales AO igual que en el escaneo principal
                     ao_task.ao_channels.add_ao_voltage_chan(slow_chan)  # slow
                     ao_task.ao_channels.add_ao_voltage_chan(fast_chan)  # fast
                     
-                    # Configurar timing igual que en el escaneo principal
+                    # Export sample clock for synchronization
+                    ao_task.export_signals.export_signal(
+                        signal_id=nidaqmx.constants.Signal.SAMPLE_CLOCK,
+                        output_terminal="/Dev1/PFI0"
+                    )
+                    
+                    # Configure AO timing
                     ao_task.timing.cfg_samp_clk_timing(
                         rate=self.config.sample_rate,
                         sample_mode=AcquisitionType.FINITE,
-                        samps_per_chan=n_reloc_samples
+                        samps_per_chan= n_reloc_samples
                     )
                     
-                    # Escribir datos igual que en el escaneo principal
+                    # Configure counter input
+                    ci_chan = ci_task.ci_channels.add_ci_count_edges_chan(
+                        f"{self.config.device_name}/{self.config.ci_channel}",
+                        edge=Edge.RISING
+                    )
+                    ci_chan.ci_count_edges_count_reset_enable = True
+                    ci_chan.ci_count_edges_count_reset_term =  ao_task.timing.samp_clk_term
+                    ci_chan.ci_count_edges_count_reset_active_edge = Edge.RISING
+                    
+                    # Sync CI with AO sample clock
+                    ci_task.timing.cfg_samp_clk_timing(
+                        rate=self.config.sample_rate,
+                        source=f"/{self.config.device_name}/ao/SampleClock",
+                        sample_mode=AcquisitionType.FINITE,
+                        samps_per_chan = n_reloc_samples
+                    )
+                    
                     writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
                     number_of_samples_written_signal = ao_task.write(xy_reloc_signal, auto_start=False)
                     
-                    
-                    # Iniciar y esperar completación
+                    # Start tasks - CI first then AO
+                    ci_task.start()
                     ao_task.start()
-                    ao_task.stop()
+                    ci_task.read(
+                        number_of_samples_per_channel=n_reloc_samples,
+                        timeout=2.0
+                    )
+                    
+                   
                 logging.info("Relocación completada correctamente.")
             except Exception as e:
                 logging.error(f"Error en relocación: {e}")
@@ -247,7 +274,7 @@ class _NIDAQScanThread(threading.Thread):
             frame_count = 0
             self._scanning = True
             while not self._stop_event.is_set() and self._scanning:
-                xy_signal = np.vstack((self.volt_y, self.volt_x))
+                xy_signal = np.vstack((self.volt_slow, self.volt_fast))
                 
                 with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
                     # Configure analog output
@@ -265,7 +292,7 @@ class _NIDAQScanThread(threading.Thread):
                     ao_task.timing.cfg_samp_clk_timing(
                         rate=self.config.sample_rate,
                         sample_mode=AcquisitionType.FINITE,
-                        samps_per_chan=self.total_samples
+                        samps_per_chan= self.frames_samples + flyback_samples
                     )
                     
                     # Configure counter input
@@ -282,7 +309,7 @@ class _NIDAQScanThread(threading.Thread):
                         rate=self.config.sample_rate,
                         source=f"/{self.config.device_name}/ao/SampleClock",
                         sample_mode=AcquisitionType.FINITE,
-                        samps_per_chan=self.total_samples 
+                        samps_per_chan = self.frames_samples + flyback_samples
                     )
                     
                     writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
@@ -290,27 +317,8 @@ class _NIDAQScanThread(threading.Thread):
                     
                     # Start tasks - CI first then AO
                     ci_task.start()
-                    # time.sleep(0.2)
-
                     ao_task.start()
                     # ao_task.write(xy_signal, auto_start=True)
-                    
-                    # Read and discard center samples at start of frame
-                    # if center_samples > 0:
-                    #     try:
-                    #         center_data = ci_task.read(
-                    #             number_of_samples_per_channel=center_samples,
-                    #             timeout=4.0
-                    #         )
-                    #     except Exception as e:
-                    #         logging.error(f"Error reading center samples: {e}")
-                    #         self._stop_event.set()
-                    #         continueç
-                    if center_samples > 0:
-                        try:
-                            _ = ci_task.read(number_of_samples_per_channel=center_samples, timeout=4.0)
-                        except Exception as e:
-                            logging.warning(f"Could not read center samples (continuing): {e}")
                     
                     # Process line by line
                     for line_idx, (start, end) in enumerate(self.line_indices):
@@ -354,24 +362,24 @@ class _NIDAQScanThread(threading.Thread):
                             else:  # 'BOTH'
                                 current_line = line_data_both
                             
-                            # Real-time processing
-                            normalized_line = current_line if last_line_last_pixel is None \
-                                else current_line - last_line_last_pixel
+                            # # Real-time processing
+                            # normalized_line = current_line if last_line_last_pixel is None \
+                            #     else current_line - last_line_last_pixel
                             
-                            last_line_last_pixel = current_line[-1]  # Update for next line
+                            # last_line_last_pixel = current_line[-1]  # Update for next line
                             
-                            diff_line = np.insert(np.diff(normalized_line), 0, 0)
-                            processed_line = diff_line
+                            # diff_line = np.insert(np.diff(normalized_line), 0, 0)
+                            # processed_line = diff_line
                             
-                            # Store for visualization
-                            processed_data.append(processed_line)
+                            # # Store for visualization
+                            # processed_data.append(processed_line)
                             
                             last_line = (line_idx == self.n_lines - 1)
                             
                             # Send to callbacks
                             for callback in self._line_callbacks:
                                 try:
-                                    if callback(processed_line, line_idx, last_line):
+                                    if callback(line_data_first, line_idx, last_line):
                                         self._stop_event.set()
                                 except Exception as e:
                                     logging.error(f"Callback error on line {line_idx}: {e}")
@@ -406,30 +414,54 @@ class _NIDAQScanThread(threading.Thread):
             self._stop_event.set()
             if self._stop_event.is_set():
                 try:
-                    xy_back_signal = np.vstack((self.y_rel, self.x_rel))
-                    n_reloc_samples = len(self.x_rel)
-                    
-                    with nidaqmx.Task() as ao_task:
+                    xy_back_signal = np.vstack((self.slow_rel, self.fast_rel))
+                    n_reloc_samples = len(self.fast_rel)
+
+                    with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
                         # Configurar canales AO igual que en el escaneo principal
-                        ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao1")  # Y
-                        ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao0")  # X
+                        ao_task.ao_channels.add_ao_voltage_chan(slow_chan)  # Y
+                        ao_task.ao_channels.add_ao_voltage_chan(fast_chan)  # X
+                        # Export sample clock for synchronization
+                        ao_task.export_signals.export_signal(
+                            signal_id=nidaqmx.constants.Signal.SAMPLE_CLOCK,
+                            output_terminal="/Dev1/PFI0"
+                        )
                         
-                        # Configurar timing igual que en el escaneo principal
+                        # Configure AO timing
                         ao_task.timing.cfg_samp_clk_timing(
                             rate=self.config.sample_rate,
                             sample_mode=AcquisitionType.FINITE,
                             samps_per_chan= n_reloc_samples
                         )
                         
-                        # Escribir datos igual que en el escaneo principal
+                        # Configure counter input
+                        ci_chan = ci_task.ci_channels.add_ci_count_edges_chan(
+                            f"{self.config.device_name}/{self.config.ci_channel}",
+                            edge=Edge.RISING
+                        )
+                        ci_chan.ci_count_edges_count_reset_enable = True
+                        ci_chan.ci_count_edges_count_reset_term =  ao_task.timing.samp_clk_term
+                        ci_chan.ci_count_edges_count_reset_active_edge = Edge.RISING
+                        
+                        # Sync CI with AO sample clock
+                        ci_task.timing.cfg_samp_clk_timing(
+                            rate=self.config.sample_rate,
+                            source=f"/{self.config.device_name}/ao/SampleClock",
+                            sample_mode=AcquisitionType.FINITE,
+                            samps_per_chan = n_reloc_samples
+                        )
+                        
                         writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
-                        number_of_samples_written_back = ao_task.write(xy_back_signal, auto_start=False)
+                        number_of_samples_written_signal = ao_task.write(xy_back_signal, auto_start=False)
                         
-                        
-                        # Iniciar y esperar completación
+                        # Start tasks - CI first then AO
+                        ci_task.start()
                         ao_task.start()
-                        ao_task.stop()
-                        
+                        # ao_task.write(xy_signal, auto_start=True)
+                        ci_task.read(
+                            number_of_samples_per_channel=n_reloc_samples,
+                            timeout=2.0
+                        )
                     logging.info("Relocación al cero completada correctamente.")
                 except Exception as e:
                     logging.error(f"Error en relocación: {e}")
@@ -678,11 +710,12 @@ class NIDAQScan(BaseScan):
         )
       
         chann_asign = {
-                    "XY": {"fast": self.config.um_to_volts_DAQum_to_volts_DAQ, "slow":self.config.um_to_volts_DAQ},
+                    "XY": {"fast": self.config.um_to_volts_DAQ, "slow":self.config.um_to_volts_DAQ},
                     "XZ": {"fast": self.config.um_to_volts_DAQ, "slow": self.config.um_to_volts_NANO},
                     "YZ": {"fast": self.config.um_to_volts_DAQ,"slow": self.config.um_to_volts_NANO}}
                 
-        
+        fast_chan_convertion = chann_asign[self.scan_params.scan_type.value]["fast"]
+        slow_chan_convertion = chann_asign[self.scan_params.scan_type.value]["slow"]
         
         # Calcular parámetros
         fast0, true_px, n_px_acc, _, v_f, acc, _ = self._calculate_parameters(
@@ -713,8 +746,9 @@ class NIDAQScan(BaseScan):
             a_max_slow=acc
                         )
                 # convertir a V (si config.um_to_volts es V/µm)
-            fast_rel_v = fast_rel_um * self.config.um_to_volts*1E6
-            slow_rel_v = slow_rel_um * self.config.um_to_volts*1E6
+            
+            fast_rel_v = fast_rel_um * fast_chan_convertion
+            slow_rel_v = slow_rel_um * slow_chan_convertion
             print(fast_rel_v)
             print(slow_rel_v)
             
@@ -777,15 +811,17 @@ class NIDAQScan(BaseScan):
         back_slow_m_shifted = back_slow_m + offset_back_slow_m
         
         # --- Convertir todo a voltios UNA VEZ (V/µm * 1e6 µm/m) ---
-        conv = self.config.um_to_volts * 1e6
-        fast_rel_v = fast_rel_m * conv
-        slow_rel_v = slow_rel_m * conv
+      
+        volt = 1E6
+        fast_rel_v = fast_rel_m * fast_chan_convertion*volt
+        slow_rel_v = slow_rel_m * slow_chan_convertion*volt
         
-        volt_fast = scan_fast_m_shifted * conv
-        volt_slow = scan_slow_m_shifted * conv
+        volt_fast = scan_fast_m_shifted * fast_chan_convertion*volt
+        volt_slow = scan_slow_m_shifted * slow_chan_convertion*volt
         
-        fast_back_v = back_fast_m_shifted * conv
-        slow_back_v = back_slow_m_shifted * conv
+        fast_back_v = back_fast_m_shifted * fast_chan_convertion*volt
+        slow_back_v = back_slow_m_shifted * slow_chan_convertion*volt
+        
         
         # Clipping
         volt_fast = np.clip(volt_fast, -self.config.max_voltage, self.config.max_voltage)
