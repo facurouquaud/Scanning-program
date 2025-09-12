@@ -13,7 +13,7 @@ from PyQt5.QtCore import Qt
 import importlib
 import Shutters_backend
 importlib.reload(Shutters_backend)
-from mock_shutters import mock_shutters
+# from mock_shutters import mock_shutters
 from Shutters_backend import NIDAQShuttersBackend
 
 class FrontEnd(QMainWindow):
@@ -124,7 +124,7 @@ class FrontEnd(QMainWindow):
 
     def change_shutter_state(self, shutter_id, new_state):
         """Actualiza el estado de un shutter en el backend."""
-        self.shutters.shutter_states[shutter_id] = new_state
+        self.shutters.set_state(shutter_id, new_state)
         print(f"Shutter {shutter_id+1} -> {new_state.upper()}")
 
 
