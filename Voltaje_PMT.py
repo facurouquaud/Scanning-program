@@ -32,7 +32,7 @@ class PMTController(QWidget):
 
     def initDAQ(self):
         # Configuración de la tarjeta NIDAQ
-        self.ao_channel = "Dev1/ao0"  # Cambiar según tu hardware
+        self.ao_channel = "Dev1/ao3"  # Cambiar según tu hardware
         self.ao_task = nidaqmx.Task()
         self.ao_task.ao_channels.add_ao_voltage_chan(
             self.ao_channel, min_val=0.0, max_val=10.0
