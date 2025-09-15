@@ -58,6 +58,7 @@ logger.setLevel(logging.DEBUG)
 # Local imports
 from mocks import mock_scanner
 from new_base_scan_2 import NIDAQScan
+from Shutters_backend import NIDAQShuttersBackend
 
 from typing import Tuple
 
@@ -92,7 +93,108 @@ _N_PLOT_LINES = 10
 # --------------------------
 # Classes
 # --------------------------
+from functools import partial
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QRadioButton, QButtonGroup,
+    QFrame, QPushButton, QSizePolicy, QScrollArea
+)
 
+class ShuttersWindow(QWidget):
+    """Ventana independiente para controlar shutters (on / off / auto)."""
+
+    def __init__(self, shutters_backend, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Shutters Control")
+        self.setGeometry(200, 200, 420, 320)
+        self.shutters = shutters_backend
+        
+
+        # Layout principal
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+
+        # Scroll area (útil si tenés muchos shutters)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        container_layout = QVBoxLayout()
+        container_layout.setSpacing(8)
+        container_layout.setContentsMargins(6, 6, 6, 6)
+
+        self._groups = {}
+
+        # Crear panel para cada shutter
+        for shutter_id in sorted(self.shutters.shutter_states.keys()):
+            panel = QFrame()
+            panel.setFrameShape(QFrame.StyledPanel)
+            row = QHBoxLayout(panel)
+            row.setContentsMargins(8, 6, 8, 6)
+
+            lbl = QLabel(f"Shutter {shutter_id+1}")
+            lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            row.addWidget(lbl)
+
+            group = QButtonGroup(self)
+            self._groups[shutter_id] = group
+
+            # Crear radio buttons y conectarlos
+            for state in ("off", "on", "auto"):
+                rb = QRadioButton(state.capitalize())
+                rb.setProperty("state_value", state)  # guardo el valor legible
+                group.addButton(rb)
+                row.addWidget(rb)
+                # Evitar cierre por late-binding usando partial
+                rb.toggled.connect(partial(self._handle_shutter_toggle, shutter_id, state))
+
+            # Inicializar según estado actual del backend
+            cur_state = self.shutters.get_state(shutter_id)
+            for btn in group.buttons():
+                if btn.property("state_value") == cur_state:
+                    btn.setChecked(True)
+                    break
+
+            container_layout.addWidget(panel)
+
+        container.setLayout(container_layout)
+        scroll.setWidget(container)
+        main_layout.addWidget(scroll)
+
+        # Botones útiles abajo: Close / All off
+        btn_row = QHBoxLayout()
+        btn_all_off = QPushButton("All OFF")
+        btn_all_off.clicked.connect(self._all_off)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.hide)
+        btn_row.addWidget(btn_all_off)
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn_close)
+        main_layout.addLayout(btn_row)
+
+        self.setLayout(main_layout)
+
+    def _handle_shutter_toggle(self, shutter_id, state, checked):
+        """Called when a radio button toggles. Solo actuamos cuando checked==True."""
+        if not checked:
+            return
+        try:
+            # set_state escribe en el hardware (o lo simula)
+            self.shutters.set_state(shutter_id, state)
+        except Exception as e:
+            logging.error("Error setting shutter %s to %s: %s", shutter_id, state, e)
+
+    def _all_off(self):
+        """Apaga todos los shutters desde la UI (y actualiza los radio buttons)."""
+        for s_id in list(self._groups.keys()):
+            try:
+                self.shutters.set_state(s_id, "off")
+                # actualizar radio buttons
+                for btn in self._groups[s_id].buttons():
+                    if btn.property("state_value") == "off":
+                        btn.setChecked(True)
+                        break
+            except Exception as e:
+                logging.error("Error al apagar shutter %s: %s", s_id, e)
 
 #  Frontend Interface
 class FrontEnd(QMainWindow):
@@ -194,7 +296,25 @@ class FrontEnd(QMainWindow):
 
         self._map_window = MapWindow((0, 20, 0, 20), .02, parent=self)
         self._map_window.show()
+        
+        # --- inicializar backends ---
+        self.shutters = NIDAQShuttersBackend(n_shutters=4, device="Dev1")
+        self.shutters.register_callbacks(
+            scan_start_callback=self.shutters._execute_scan_start_callbacks,
+            scan_end_callback=self.shutters._execute_scan_stop_callbacks
+        )
+         # --- layout principal del escaneo ---
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        # Botón para abrir la ventana de shutters
+        # Agrego una toolbar arriba
+        toolbar = self.addToolBar("Shutters")
+        toolbar.addAction("Abrir control de shutters", self._open_shutters_window)
 
+        self.shutters_window = None
+
+      
     # ----------------------------
     # Dockable windows
     # ----------------------------
@@ -1012,6 +1132,37 @@ class FrontEnd(QMainWindow):
         except TypeError:
             pass
         logger.info("New center selected at (%.3f, %.3f)", x, y)
+        
+        #Shutters
+    def _scan_start_master(self, params, shape):
+        # Primero la UI
+        try:
+            self.handle_scan_start(params, shape)
+        except Exception as e:
+            logging.error("Error en handle_scan_start: %s", e)
+        # Luego los shutters (abrir los "auto")
+        try:
+            self.shutters._execute_scan_start_callbacks()
+        except Exception as e:
+            logging.error("Error en shutters start callbacks: %s", e)
+
+    def _scan_end_master(self):
+        try:
+            self._emit_end()
+        except Exception as e:
+            logging.error("Error en emit_end: %s", e)
+        try:
+            self.shutters._execute_scan_stop_callbacks()
+        except Exception as e:
+            logging.error("Error en shutters stop callbacks: %s", e)    
+        
+    def _open_shutters_window(self):
+        if self.shutters_window is None:
+            self.shutters_window = ShuttersWindow(self.shutters)
+        self.shutters_window.show()
+        self.shutters_window.raise_()
+        self.shutters_window.activateWindow()
+
 
     # ----------------------------
     def closeEvent(self, event):
