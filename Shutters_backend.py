@@ -11,7 +11,7 @@ import logging
 
 
 StartCallback = Callable[[object, Tuple[int, int]], None]
-StopCallback = Callable[[], None]
+EndCallback = Callable[[], None]
 
 class ShuttersBackend:
     """Backend genérico para manejar el estado de shutters."""
@@ -22,7 +22,7 @@ class ShuttersBackend:
         # Estado inicial: todos apagados
         self.shutter_states = {i: "off" for i in range(n_shutters)}
         self._start_callbacks: List[StartCallback] = []
-        self._stop_callbacks: List[StopCallback] = []
+        self._end_callbacks: List[EndCallback] = []
 
     def set_state(self, shutter_id, state):
         """Cambia el estado de un shutter."""
@@ -44,7 +44,7 @@ class ShuttersBackend:
 class NIDAQShuttersBackend(ShuttersBackend):
     def __init__(self, n_shutters=4, device="Dev1"):
         self._start_callbacks: List[StartCallback] = []
-        self._stop_callbacks: List[StopCallback] = []
+        self._end_callbacks: List[EndCallback] = []
         #  Importante: inicializar el padre para crear self.shutter_states
         super().__init__(n_shutters)
 
@@ -71,21 +71,20 @@ class NIDAQShuttersBackend(ShuttersBackend):
             # En "auto" quizás lo maneje el escaneo, no lo forzamos acá
             pass
     def register_callbacks(self,
-                          scan_start_callback: Optional[StartCallback] = None,
-                          scan_end_callback: Optional[StopCallback] = None
+                          shutter_start_callback: Optional[StartCallback] = None,
+                          shutter_end_callback: Optional[EndCallback] = None
                          ):
         """Register scan callbacks."""
-        if scan_start_callback:
-            self._start_callbacks.append(scan_start_callback)
-        if scan_end_callback:
-            self._stop_callbacks.append(scan_end_callback)
-    def _execute_scan_start_callbacks(self):
-        """Al iniciar escaneo, abrir los shutters en auto y notificar callbacks."""
+        if shutter_start_callback:
+            self._start_callbacks.append(shutter_start_callback)
+        if shutter_end_callback:
+            self._end_callbacks.append(shutter_end_callback)
+    def _execute_shutter_start_callbacks(self):
         for s_id, state in self.shutter_states.items():
+            print(f"[DEBUG] Shutter {s_id+1} state={state}")
             if state == "auto":
-                self.tasks[s_id].write(True)  # abrir shutter
-                self.task.close()
-                print(f"[BACKEND] Shutter {s_id+1} (AUTO) -> ON")
+                print(f"[DEBUG] Abrir shutter {s_id+1}")
+                self.tasks[s_id].write(True)
 
         for callback in self._start_callbacks:
             try:
@@ -93,15 +92,14 @@ class NIDAQShuttersBackend(ShuttersBackend):
             except Exception as e:
                 logging.error(f"Start callback error: {e}")
 
-    def _execute_scan_stop_callbacks(self):
+    def _execute_shutter_end_callbacks(self):
         """Al terminar escaneo, cerrar los shutters en auto y notificar callbacks."""
         for s_id, state in self.shutter_states.items():
             if state == "auto":
                 self.tasks[s_id].write(False)  # cerrar shutter
-                self.task.close()
                 print(f"[BACKEND] Shutter {s_id+1} (AUTO) -> OFF")
 
-        for callback in self._stop_callbacks:
+        for callback in self._end_callbacks:
             try:
                 callback()
             except Exception as e:

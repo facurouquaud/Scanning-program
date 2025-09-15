@@ -50,6 +50,7 @@ import pyqtutils
 from map_region import MapWindow
 import logging
 
+
 # Set up logging
 logging.basicConfig()
 logger = logging.getLogger(__name__)
@@ -299,10 +300,12 @@ class FrontEnd(QMainWindow):
         
         # --- inicializar backends ---
         self.shutters = NIDAQShuttersBackend(n_shutters=4, device="Dev1")
-        self.shutters.register_callbacks(
-            scan_start_callback=self.shutters._execute_scan_start_callbacks,
-            scan_end_callback=self.shutters._execute_scan_stop_callbacks
-        )
+        
+        
+        # self.shutters.register_callbacks(
+        #     scan_start_callback=self.shutters._execute_scan_start_callbacks,
+        #     scan_end_callback=self.shutters._execute_scan_stop_callbacks
+        # )
          # --- layout principal del escaneo ---
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -1134,27 +1137,27 @@ class FrontEnd(QMainWindow):
         logger.info("New center selected at (%.3f, %.3f)", x, y)
         
         #Shutters
-    def _scan_start_master(self, params, shape):
-        # Primero la UI
-        try:
-            self.handle_scan_start(params, shape)
-        except Exception as e:
-            logging.error("Error en handle_scan_start: %s", e)
-        # Luego los shutters (abrir los "auto")
-        try:
-            self.shutters._execute_scan_start_callbacks()
-        except Exception as e:
-            logging.error("Error en shutters start callbacks: %s", e)
+    # def _scan_start_master(self, params, shape):
+    #     # Primero la UI
+    #     try:
+    #         self.handle_scan_start(params, shape)
+    #     except Exception as e:
+    #         logging.error("Error en handle_scan_start: %s", e)
+    #     # Luego los shutters (abrir los "auto")
+    #     try:
+    #         self.shutters._execute_shutter_start_callbacks()
+    #     except Exception as e:
+    #         logging.error("Error en shutters start callbacks: %s", e)
 
-    def _scan_end_master(self):
-        try:
-            self._emit_end()
-        except Exception as e:
-            logging.error("Error en emit_end: %s", e)
-        try:
-            self.shutters._execute_scan_stop_callbacks()
-        except Exception as e:
-            logging.error("Error en shutters stop callbacks: %s", e)    
+    # def _scan_end_master(self):
+    #     try:
+    #         self._emit_end()
+    #     except Exception as e:
+    #         logging.error("Error en emit_end: %s", e)
+    #     try:
+    #         self.shutters._execute_shutter_stop_callbacks()
+    #     except Exception as e:
+    #         logging.error("Error en shutters stop callbacks: %s", e)    
         
     def _open_shutters_window(self):
         if self.shutters_window is None:
@@ -1185,7 +1188,8 @@ class FrontEnd(QMainWindow):
 
 if __name__ == "__main__":
     # scanner = mock_scanner()
-    scanner = NIDAQScan()
+    backend = NIDAQShuttersBackend()
+    scanner = NIDAQScan(shutter_backend=backend)
     app = QApplication(sys.argv)
     # app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
 

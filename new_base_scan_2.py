@@ -21,6 +21,7 @@ from scan_parameters import RegionScanData
 from typing import Tuple
 import time
 import copy
+from Shutters_backend import NIDAQShuttersBackend
 
 # Define callback types
 StartCallback = Callable[[object, Tuple[int, int]], None]
@@ -212,10 +213,10 @@ class _NIDAQScanThread(threading.Thread):
         flyback_samples = max(0, flyback_samples)
         
         # AO-only relocation - Mismo enfoque que el escaneo principal
-        if self.fast_back_v is not None and self.slow_back_v is not None:
+        if self.fast_rel is not None and self.slow_rel is not None:
             try:
-                xy_reloc_signal = np.vstack((self.slow_back_v, self.fast_back_v))
-                n_reloc_samples = len(self.fast_back_v)
+                xy_reloc_signal = np.vstack((self.slow_rel, self.fast_rel))
+                n_reloc_samples = len(self.fast_rel)
                 
                 with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
                     # Configurar canales AO igual que en el escaneo principal
@@ -414,8 +415,8 @@ class _NIDAQScanThread(threading.Thread):
             self._stop_event.set()
             if self._stop_event.is_set():
                 try:
-                    xy_back_signal = np.vstack((self.slow_rel, self.fast_rel))
-                    n_reloc_samples = len(self.fast_rel)
+                    xy_back_signal = np.vstack((self.slow_back_v, self.fast_back_v))
+                    n_reloc_samples = len(self.fast_back_v)
 
                     with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
                         # Configurar canales AO igual que en el escaneo principal
@@ -487,7 +488,7 @@ class _NIDAQScanThread(threading.Thread):
 class NIDAQScan(BaseScan):
     """NIDAQ-based scanner for microscopy systems."""
     
-    def __init__(self, config: Optional[ScannerConfig] = None):
+    def __init__(self, shutter_backend, config: Optional[ScannerConfig] = None):
         self.config = config or ScannerConfig()
         self._start_callbacks: List[StartCallback] = []
         self._stop_callbacks: List[StopCallback] = []
@@ -498,8 +499,8 @@ class NIDAQScan(BaseScan):
         self._stop_event = threading.Event()
         self._scanning = False
         self._lock = threading.Lock()
-        self.current_position = np.array([0.0, 0.0])
-        
+        self.current_position = np.array([0.0, 0.0]) 
+        self.shutter_backend = shutter_backend
         
     def is_scanning(self) -> bool:
       """Thread-safe way to check scanning status."""
@@ -539,10 +540,10 @@ class NIDAQScan(BaseScan):
             self.scan_params = dataclasses.replace(params)
             self._stop_event.clear()
             self._scanning = True
-            
         if not self._validate_scan_params(params):
              raise ValueError("Invalid scan parameters")
-            
+     
+        self.shutter_backend._execute_shutter_start_callbacks()   
         self._execute_scan_start_callbacks()
         self._thread = self._create_scan_thread()
         self._thread.start()
@@ -600,6 +601,7 @@ class NIDAQScan(BaseScan):
             else:
                 self._thread = None
                 self._execute_scan_stop_callbacks()
+    
 
     def _execute_scan_stop_callbacks(self):
         """Notify all stop callbacks."""
@@ -721,7 +723,6 @@ class NIDAQScan(BaseScan):
         fast0, true_px, n_px_acc, _, v_f, acc, _ = self._calculate_parameters(
             sfast,sslow,px_size, dwell_time,n_pix
         )
-        print(fast0)
        
         # generar recentrado solo si haslow center en params
         # x_0, y_0 = self.current_position
@@ -749,8 +750,7 @@ class NIDAQScan(BaseScan):
             
             fast_rel_v = fast_rel_um * fast_chan_convertion
             slow_rel_v = slow_rel_um * slow_chan_convertion
-            print(fast_rel_v)
-            print(slow_rel_v)
+            
             
         
             # asegurar al menos 2 puntos
@@ -777,7 +777,7 @@ class NIDAQScan(BaseScan):
             fast_rel_m = np.pad(fast_rel_m, (0, 2 - fast_rel_m.size), mode='edge')
         if slow_rel_m.size < 2:
             slow_rel_m = np.pad(slow_rel_m, (0, 2 - slow_rel_m.size), mode='edge')
-        
+        print(f"la cantidad de pixeles por linea es {true_px}")
         # Trajectoria de escaneo: escaneo2D_back devuelve arrays en metros (supuesto)
         t, scan_fast_m, scan_slow_m, samples_per_line = self.escaneo2D_back(
             n_lines, fast0 , params.end_point[1]*1E-6, dwell_time, n_px_acc, true_px, acc, v_f, px_size
@@ -831,10 +831,11 @@ class NIDAQScan(BaseScan):
         fast_back_v = np.clip(fast_back_v, -self.config.max_voltage, self.config.max_voltage)
         slow_back_v = np.clip(slow_back_v, -self.config.max_voltage, self.config.max_voltage)
         
+        
         # --- Comprobaciones rápidas ---
         print("Continuidad center->scan (V):", fast_rel_v[-1], volt_fast[0], "diff:", fast_rel_v[-1]-volt_fast[0])
         print("Continuidad scan->back (V):", volt_fast[-1], fast_back_v[0], "diff:", volt_fast[-1]-fast_back_v[0])
-        
+        print(len(volt_fast) + len(fast_rel_v) + len(fast_back_v))
         # Asserts (opcional, lanzar error si no coincide dentro de tol)
         tol = 1e-6
         assert np.allclose(fast_rel_v[-1], volt_fast[0], atol=tol), "No coincide fast center->scan"
@@ -887,23 +888,23 @@ class NIDAQScan(BaseScan):
        #              f"X range: {np.min(volt_x):.2f} to {np.max(volt_x):.2f} µm, "
        #              f"Y range: {np.min(volt_y):.2f} to {np.max(volt_y):.2f} µm, "
        #              f"Samples: {len(volt_x)}, Lines: {n_lines}")
-        def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
-            fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
-            ax1.scatter(t, x,s = 8, color ="black")
-            ax1.set_ylabel("Posición X [V]")
-            ax1.set_title(titulo)
-            ax1.grid(True)
-            ax2.scatter(t, y,s = 8, color="black")
-            ax2.set_ylabel("Posición Y [V]")
-            ax2.set_xlabel("Tiempo [us]")
-            ax2.grid(True)
-            plt.tight_layout()
-            plt.show()
-        if len(t_rel) > 1:
-              muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
-        muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
-        if len(t_back) > 1:
-                muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
+        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
+        #     ax1.scatter(t, x,s = 8, color ="black")
+        #     ax1.set_ylabel("Posición X [V]")
+        #     ax1.set_title(titulo)
+        #     ax1.grid(True)
+        #     ax2.scatter(t, y,s = 8, color="black")
+        #     ax2.set_ylabel("Posición Y [V]")
+        #     ax2.set_xlabel("Tiempo [us]")
+        #     ax2.grid(True)
+        #     plt.tight_layout()
+        #     plt.show()
+        # if len(t_rel) > 1:
+        #       muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
+        # muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
+        # if len(t_back) > 1:
+        #         muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
        
         # devolver/crear thread pasando solo señales slowa procesadas:
         return _NIDAQScanThread(
