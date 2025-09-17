@@ -10,7 +10,7 @@ from typing import Callable, Optional, List, Tuple
 import logging
 
 
-StartCallback = Callable[[object, Tuple[int, int]], None]
+StartCallback = Callable[[], None]
 EndCallback = Callable[[], None]
 
 class ShuttersBackend:
@@ -21,6 +21,7 @@ class ShuttersBackend:
     def __init__(self, n_shutters=4):
         # Estado inicial: todos apagados
         self.shutter_states = {i: "off" for i in range(n_shutters)}
+        self.shutter_states[0] = "auto"
         self._start_callbacks: List[StartCallback] = []
         self._end_callbacks: List[EndCallback] = []
 
@@ -45,7 +46,6 @@ class NIDAQShuttersBackend(ShuttersBackend):
     def __init__(self, n_shutters=4, device="Dev1"):
         self._start_callbacks: List[StartCallback] = []
         self._end_callbacks: List[EndCallback] = []
-        #  Importante: inicializar el padre para crear self.shutter_states
         super().__init__(n_shutters)
 
         self.device = device
@@ -68,7 +68,6 @@ class NIDAQShuttersBackend(ShuttersBackend):
         elif state == "off":
             self.tasks[shutter_id].write(False)
         elif state == "auto":
-            # En "auto" quizás lo maneje el escaneo, no lo forzamos acá
             pass
     def register_callbacks(self,
                           shutter_start_callback: Optional[StartCallback] = None,
@@ -80,11 +79,14 @@ class NIDAQShuttersBackend(ShuttersBackend):
         if shutter_end_callback:
             self._end_callbacks.append(shutter_end_callback)
     def _execute_shutter_start_callbacks(self):
+        print("[DEBUG] Ejecutando START callbacks")
         for s_id, state in self.shutter_states.items():
-            print(f"[DEBUG] Shutter {s_id+1} state={state}")
+            print(f" Shutter {s_id+1} state={state}")
+            
             if state == "auto":
-                print(f"[DEBUG] Abrir shutter {s_id+1}")
                 self.tasks[s_id].write(True)
+                print(f" Abrir shutter {s_id+1}")
+                
 
         for callback in self._start_callbacks:
             try:

@@ -579,6 +579,7 @@ class NIDAQScan(BaseScan):
     def stop_scan(self):
         """Stop the current scan."""
         if not self._scanning:
+            self.shutter_backend._execute_shutter_end_callbacks() 
             logging.warning("No active scan to stop")
             return
         
@@ -601,6 +602,9 @@ class NIDAQScan(BaseScan):
             else:
                 self._thread = None
                 self._execute_scan_stop_callbacks()
+                self.shutter_backend._execute_shutter_end_callbacks()   
+
+                
     
 
     def _execute_scan_stop_callbacks(self):
