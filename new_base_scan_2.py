@@ -90,6 +90,7 @@ class _NIDAQScanThread(threading.Thread):
         self.scan_params = params
         self._line_callbacks = line_callbacks
         self._stop_event = threading.Event()
+        self._stop_frame = False
         self._error_occurred = False
         self.n_px_acc = n_px_acc
         self.volt_fast = volt_fast
@@ -260,8 +261,7 @@ class _NIDAQScanThread(threading.Thread):
                     ci_task.start()
                     ao_task.start()
                     ci_task.read(
-                        number_of_samples_per_channel=n_reloc_samples,
-                        timeout=2.0
+                        number_of_samples_per_channel=n_reloc_samples
                     )
                     
                    
@@ -274,6 +274,7 @@ class _NIDAQScanThread(threading.Thread):
         try:
             frame_count = 0
             self._scanning = True
+            # self._stop_frame = False
             while not self._stop_event.is_set() and self._scanning:
                 xy_signal = np.vstack((self.volt_slow, self.volt_fast))
                 
@@ -323,20 +324,17 @@ class _NIDAQScanThread(threading.Thread):
                     
                     # Process line by line
                     for line_idx, (start, end) in enumerate(self.line_indices):
-                        if self._stop_event.is_set():
-                            logging.info("Scan stopped by user request")
-                            self._scan_completed = False
-                            break
-                        
+                       
                         # Read line data
                         try:
                             line_total_data = ci_task.read(
-                                number_of_samples_per_channel=self.samples_per_line,
-                                timeout=4.0
+                                number_of_samples_per_channel=self.samples_per_line
                             )
                         except Exception as e:
                             logging.error(f"DAQ read error on line {line_idx}: {e}")
                             self._stop_event.set()
+                            self._scan_completed = False
+
                             break
                         
                         # Validate data length
@@ -379,11 +377,12 @@ class _NIDAQScanThread(threading.Thread):
                             
                             # Send to callbacks
                             for callback in self._line_callbacks:
-                                try:
-                                    if callback(line_data_first, line_idx, last_line):
-                                        self._stop_event.set()
-                                except Exception as e:
-                                    logging.error(f"Callback error on line {line_idx}: {e}")
+                                callback(line_data_first, line_idx, last_line)
+                                
+                            
+                            # if self._stop_event.is_set():
+                            #       logging.info("Scan stopped by user request")
+                            #       break 
                         
                         except Exception as e:
                             logging.error(f"Processing error on line {line_idx}: {e}")
@@ -391,19 +390,24 @@ class _NIDAQScanThread(threading.Thread):
                             break
                     
                     # Read and discard flyback samples at end of frame
-                    if flyback_samples > 0 and not self._stop_event.is_set():
+                    if flyback_samples > 0:
                         try:
                             ci_task.read(
-                                number_of_samples_per_channel=flyback_samples,
-                                timeout=2.0
+                                number_of_samples_per_channel=flyback_samples
                             )
+                        
                         except Exception as e:
                             logging.warning(f"Flyback read skipped: {e}")
+                        
+                    if self._stop_frame:
+                        print(self._stop_frame)
+                        self._stop_event.set()
                 
                 # End of frame processing
+                
                 frame_count += 1
+                
                 logging.info(f"Completed frame {frame_count}")
-                last_line_last_pixel = None  # Reset for next frame
 
         
         except Exception as e:
@@ -412,8 +416,9 @@ class _NIDAQScanThread(threading.Thread):
             self._scanning = False
         
         finally:
-            self._stop_event.set()
+            # self._stop_event.set()
             if self._stop_event.is_set():
+                
                 try:
                     xy_back_signal = np.vstack((self.slow_back_v, self.fast_back_v))
                     n_reloc_samples = len(self.fast_back_v)
@@ -460,25 +465,23 @@ class _NIDAQScanThread(threading.Thread):
                         ao_task.start()
                         # ao_task.write(xy_signal, auto_start=True)
                         ci_task.read(
-                            number_of_samples_per_channel=n_reloc_samples,
-                            timeout=2.0
-                        )
+                            number_of_samples_per_channel=n_reloc_samples)
                     logging.info("Relocación al cero completada correctamente.")
                 except Exception as e:
                     logging.error(f"Error en relocación: {e}")
                     self._stop_event.set()
                     return
                 logging.info("Scan completed successfully")
-            elif self._stop_event.is_set():
-                logging.info("Scan was interrupted")
-            else:
-                logging.error("Scan terminated with errors")
+            # elif self._stop_event.is_set():
+            #     logging.info("Scan was interrupted")
+            # else:
+            #     logging.error("Scan terminated with errors")
 
 
     
     def stop(self):
         """Gracefully stop the scan."""
-        self._stop_event.set()
+        self._stop_frame = True
         self._scanning = False
 
  
@@ -497,6 +500,7 @@ class NIDAQScan(BaseScan):
         self.scan_params: Optional[scan_parameters.RegionScanParameters] = None
         self.scan_data = scan_parameters.RegionScanData.FIRST
         self._stop_event = threading.Event()
+        self._stop_frame = False
         self._scanning = False
         self._lock = threading.Lock()
         self.current_position = np.array([0.0, 0.0]) 
@@ -585,7 +589,8 @@ class NIDAQScan(BaseScan):
         
         # First set stop flags
         with self._lock:
-            self._stop_event.set()
+            # self._stop_event.set()
+            self._stop_frame = True
             self._scanning = False
         
         # Then stop the thread
@@ -827,7 +832,7 @@ class NIDAQScan(BaseScan):
         slow_back_v = back_slow_m_shifted * slow_chan_convertion*volt
         
         
-        # Clipping
+        # Clipping (chequeamos que no superen valores de voltajes)
         volt_fast = np.clip(volt_fast, -self.config.max_voltage, self.config.max_voltage)
         volt_slow = np.clip(volt_slow, -self.config.max_voltage, self.config.max_voltage)
         fast_rel_v = np.clip(fast_rel_v, -self.config.max_voltage, self.config.max_voltage)
