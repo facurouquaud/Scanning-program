@@ -210,13 +210,13 @@ def scanning_2D(n_lines: int, fast_0: float, slow_0: float,
     # le pido que n_lineso haga una subida mas en slow
     # slow_total[-num_points:] = slow_total[-num_points - 1]
 
-    last_fast = fast_total[-1]
+    last_fast = -fast_0
     last_slow = slow_total[-1]
     last_t = t_total[-1]
 
     # Garantizar que el último punto sea exactamente slow_0
 
-    t_back, fast_back, slow_back,_ = finish_scan(last_t, last_fast, last_slow, fast_0, slow_0,dwell_time, acc, acc)
+    t_back, fast_back, slow_back,_ = finish_scan(last_t, last_fast, last_slow, -fast_0, slow_0,dwell_time, acc, acc)
 
     # Concatenar la vuelta
     t_total = np.concatenate([t_total, t_back])
