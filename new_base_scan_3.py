@@ -189,6 +189,43 @@ class _NIDAQScanThread(threading.Thread):
         line_valida = np.concatenate([line_ida, line_vuelta])
 
         return line_valida, line_ida, line_vuelta
+    def channel_configuration(self,ao_task, ci_task,xy_signal, number_of_points,slow_chan,fast_chan):
+        ao_task.ao_channels.add_ao_voltage_chan(slow_chan)  # slow
+        ao_task.ao_channels.add_ao_voltage_chan(fast_chan)  # fast
+        
+        # Export sample clock for synchronization
+        ao_task.export_signals.export_signal(
+            signal_id=nidaqmx.constants.Signal.SAMPLE_CLOCK,
+            output_terminal="/Dev1/PFI0"
+        )
+        
+        # Configure AO timing
+        ao_task.timing.cfg_samp_clk_timing(
+            rate=self.config.sample_rate,
+            sample_mode=AcquisitionType.FINITE,
+            samps_per_chan= number_of_points
+        )
+        
+        # Configure counter input
+        ci_chan = ci_task.ci_channels.add_ci_count_edges_chan(
+            f"{self.config.device_name}/{self.config.ci_channel}",
+            edge=Edge.RISING
+        )
+        ci_chan.ci_count_edges_count_reset_enable = True
+        ci_chan.ci_count_edges_count_reset_term =  ao_task.timing.samp_clk_term
+        ci_chan.ci_count_edges_count_reset_active_edge = Edge.RISING
+        
+        # Sync CI with AO sample clock
+        ci_task.timing.cfg_samp_clk_timing(
+            rate=self.config.sample_rate,
+            source=f"/{self.config.device_name}/ao/SampleClock",
+            sample_mode=AcquisitionType.FINITE,
+            samps_per_chan = number_of_points
+        )
+        
+        writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
+        number_of_samples_written_signal = ao_task.write(xy_signal, auto_start=False)
+    
 
     def run(self):
         chann_asign = {
@@ -214,43 +251,8 @@ class _NIDAQScanThread(threading.Thread):
                 n_reloc_samples = len(self.fast_rel)
 
                 with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
-                    # Configurar canales AO igual que en el escaneo principal
-                    ao_task.ao_channels.add_ao_voltage_chan(slow_chan)  # slow
-                    ao_task.ao_channels.add_ao_voltage_chan(fast_chan)  # fast
-
-                    # Export sample clock for synchronization
-                    ao_task.export_signals.export_signal(
-                        signal_id=nidaqmx.constants.Signal.SAMPLE_CLOCK,
-                        output_terminal="/Dev1/PFI0"
-                    )
-
-                    # Configure AO timing
-                    ao_task.timing.cfg_samp_clk_timing(
-                        rate=self.config.sample_rate,
-                        sample_mode=AcquisitionType.FINITE,
-                        samps_per_chan= n_reloc_samples
-                    )
-
-                    # Configure counter input
-                    ci_chan = ci_task.ci_channels.add_ci_count_edges_chan(
-                        f"{self.config.device_name}/{self.config.ci_channel}",
-                        edge=Edge.RISING
-                    )
-                    ci_chan.ci_count_edges_count_reset_enable = True
-                    ci_chan.ci_count_edges_count_reset_term =  ao_task.timing.samp_clk_term
-                    ci_chan.ci_count_edges_count_reset_active_edge = Edge.RISING
-
-                    # Sync CI with AO sample clock
-                    ci_task.timing.cfg_samp_clk_timing(
-                        rate=self.config.sample_rate,
-                        source=f"/{self.config.device_name}/ao/SampleClock",
-                        sample_mode=AcquisitionType.FINITE,
-                        samps_per_chan = n_reloc_samples
-                    )
-
-                    writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
-                    number_of_samples_written_signal = ao_task.write(xy_reloc_signal, auto_start=False)
-
+                    self.channel_configuration(ao_task,ci_task,xy_reloc_signal,
+                    n_reloc_samples,slow_chan, fast_chan)
                     # Start tasks - CI first then AO
                     ci_task.start()
                     ao_task.start()
@@ -271,47 +273,13 @@ class _NIDAQScanThread(threading.Thread):
                 xy_signal = np.vstack((self.volt_slow, self.volt_fast))
 
                 with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
-                    # Configure analog output
-                    ao_task.ao_channels.add_ao_voltage_chan(slow_chan, name_to_assign_to_channel="slow")
-                    ao_task.ao_channels.add_ao_voltage_chan(fast_chan, name_to_assign_to_channel="fast")
-
-                    # Export sample clock for synchronization
-                    ao_task.export_signals.export_signal(
-                        signal_id=nidaqmx.constants.Signal.SAMPLE_CLOCK,
-                        output_terminal="/Dev1/PFI0"
-                    )
-
-                    # Configure AO timing
-                    ao_task.timing.cfg_samp_clk_timing(
-                        rate=self.config.sample_rate,
-                        sample_mode=AcquisitionType.FINITE,
-                        samps_per_chan= self.frames_samples + flyback_samples
-                    )
-
-                    # Configure counter input
-                    ci_chan = ci_task.ci_channels.add_ci_count_edges_chan(
-                        f"{self.config.device_name}/{self.config.ci_channel}",
-                        edge=Edge.RISING
-                    )
-                    ci_chan.ci_count_edges_count_reset_enable = True
-                    ci_chan.ci_count_edges_count_reset_term =  ao_task.timing.samp_clk_term
-                    ci_chan.ci_count_edges_count_reset_active_edge = Edge.RISING
-
-                    # Sync CI with AO sample clock
-                    ci_task.timing.cfg_samp_clk_timing(
-                        rate=self.config.sample_rate,
-                        source=f"/{self.config.device_name}/ao/SampleClock",
-                        sample_mode=AcquisitionType.FINITE,
-                        samps_per_chan = self.frames_samples + flyback_samples
-                    )
-
-                    writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
-                    number_of_samples_written_signal = ao_task.write(xy_signal, auto_start=False)
+                    # Configure analog 
+                    self.channel_configuration(ao_task, ci_task, xy_signal, self.frames_samples +
+                    flyback_samples, slow_chan, fast_chan)
 
                     # Start tasks - CI first then AO
                     ci_task.start()
                     ao_task.start()
-                    # ao_task.write(xy_signal, auto_start=True)
 
                     # Process line by line
                     logger.info("Arrancando scan")
@@ -352,7 +320,11 @@ class _NIDAQScanThread(threading.Thread):
 
                             # Send to callbacks
                             for callback in self._line_callbacks:
-                                callback(current_line, line_idx, last_line)
+                                try:
+                                    if callback(current_line, line_idx, last_line):
+                                        self._stop_event.set()
+                                except Exception as e:
+                                    logging.error(f"Callback error on line {line_idx}: {e}")
 
                             # if self._stop_event.is_set():
                             #       logger.info("Scan stopped by user request")
@@ -391,41 +363,9 @@ class _NIDAQScanThread(threading.Thread):
                     xy_back_signal = np.vstack((self.slow_back_v, self.fast_back_v))
                     n_reloc_samples = len(self.fast_back_v)
                     with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
-                        # Configurar canales AO igual que en el escaneo principal
-                        ao_task.ao_channels.add_ao_voltage_chan(slow_chan)  # Y
-                        ao_task.ao_channels.add_ao_voltage_chan(fast_chan)  # X
-                        # Export sample clock for synchronization
-                        ao_task.export_signals.export_signal(
-                            signal_id=nidaqmx.constants.Signal.SAMPLE_CLOCK,
-                            output_terminal="/Dev1/PFI0"
-                        )
-                        # Configure AO timing
-                        ao_task.timing.cfg_samp_clk_timing(
-                            rate=self.config.sample_rate,
-                            sample_mode=AcquisitionType.FINITE,
-                            samps_per_chan= n_reloc_samples
-                        )
-
-                        # Configure counter input
-                        ci_chan = ci_task.ci_channels.add_ci_count_edges_chan(
-                            f"{self.config.device_name}/{self.config.ci_channel}",
-                            edge=Edge.RISING
-                        )
-                        ci_chan.ci_count_edges_count_reset_enable = True
-                        ci_chan.ci_count_edges_count_reset_term =  ao_task.timing.samp_clk_term
-                        ci_chan.ci_count_edges_count_reset_active_edge = Edge.RISING
-
-                        # Sync CI with AO sample clock
-                        ci_task.timing.cfg_samp_clk_timing(
-                            rate=self.config.sample_rate,
-                            source=f"/{self.config.device_name}/ao/SampleClock",
-                            sample_mode=AcquisitionType.FINITE,
-                            samps_per_chan = n_reloc_samples
-                        )
-
-                        writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
-                        number_of_samples_written_signal = ao_task.write(xy_back_signal, auto_start=False)
-
+                        self.channel_configuration(ao_task, ci_task, xy_back_signal, n_reloc_samples,
+                        slow_chan, fast_chan)
+            
                         # Start tasks - CI first then AO
                         ci_task.start()
                         ao_task.start()
@@ -811,62 +751,24 @@ class NIDAQScan(BaseScan):
         line_indices = [(i * samples_per_line, (i + 1) * samples_per_line) for i in range(n_lines)]
 
 
-
-       # # Generar trayectorias de frames
-       #  t, volt_x, volt_y, samples_per_line = self.escaneo2D_back(
-       #      n_lines, x0 , params.end_point[1]*1E-6, dwell_time, n_px_acc, true_px, acc, v_f, px_size
-       #  )
-
-
-
-
-
-       #  offset_x =   x_rel_v[-1]*np.ones_like(volt_x)
-       #  offset_y = y_rel_v[-1]*np.ones_like(volt_y)
-       #  volt_x = volt_x * self.config.um_to_volts*1E6 + offset_x
-       #  volt_y = volt_y* self.config.um_to_volts*1E6 + offset_y
-
-
-       #  # generar vuelta final al origen
-       #  t_back, x_back, y_back, n_back = self.move_to_center_scan(
-       #  0.0,
-       #  0,
-       #  0,
-       #  dwell_time,
-       #  a_max_x=acc,
-       #  a_max_y=acc
-       #              )
-       #  x_back_v = x_back * self.config.um_to_volts*1E6
-       #  y_back_v = y_back * self.config.um_to_volts*1E6
-       #  # clip por seguridad
-       #  x_back_v = np.clip(x_back_v, -self.config.max_voltage, self.config.max_voltage)
-       #  y_back_v = np.clip(y_back_v, -self.config.max_voltage, self.config.max_voltage)
-       #  self.update_current_position(0,0)
-       #  # preparar señal XY completa para escribir (Y, X) y total_samples
-
-
-       #  # Registrar información de trayectoria
-       #  logger.info(f"Generated trajectory: "
-       #              f"X range: {np.min(volt_x):.2f} to {np.max(volt_x):.2f} µm, "
-       #              f"Y range: {np.min(volt_y):.2f} to {np.max(volt_y):.2f} µm, "
-       #              f"Samples: {len(volt_x)}, Lines: {n_lines}")
-        def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
-            fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
-            ax1.scatter(t, x,s = 8, color ="black")
-            ax1.set_ylabel("Posición X [V]")
-            ax1.set_title(titulo)
-            ax1.grid(True)
-            ax2.scatter(t, y,s = 8, color="black")
-            ax2.set_ylabel("Posición Y [V]")
-            ax2.set_xlabel("Tiempo [us]")
-            ax2.grid(True)
-            plt.tight_layout()
-            plt.show()
-        if len(t_rel) > 1:
-              muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
-        muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
-        if len(t_back) > 1:
-                muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
+        #Esta parte grafica los voltajes generados. Mantener comentado a la hora de escanear.
+        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
+        #     ax1.scatter(t, x,s = 8, color ="black")
+        #     ax1.set_ylabel("Posición X [V]")
+        #     ax1.set_title(titulo)
+        #     ax1.grid(True)
+        #     ax2.scatter(t, y,s = 8, color="black")
+        #     ax2.set_ylabel("Posición Y [V]")
+        #     ax2.set_xlabel("Tiempo [us]")
+        #     ax2.grid(True)
+        #     plt.tight_layout()
+        #     plt.show()
+        # if len(t_rel) > 1:
+        #       muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
+        # muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
+        # if len(t_back) > 1:
+        #         muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
 
         # devolver/crear thread pasando solo señales slowa procesadas:
         return _NIDAQScanThread(
@@ -890,24 +792,6 @@ class NIDAQScan(BaseScan):
         )
 
         print(n_px_acc)
-
-        # # Crear y retornar thread
-        # return _NIDAQScanThread( params = params,
-        #     line_callbacks=self._line_callbacks,
-        #     moving_center_func=self.finish_scan,
-        #     volt_x=volt_x,
-        #     volt_y=volt_y,
-        #     t = t,
-        #     acc_um_s2 = acc * 1e6,
-        #     true_px=true_px,
-        #     n_px_acc=n_px_acc,
-        #     samples_per_line=samples_per_line,
-        #     n_lines=n_lines,
-        #     config=thread_config
-        # )
-
-   
-
 
     def get_data_shape(self) -> Tuple[int, int]:
         """Get scan data dimensions."""

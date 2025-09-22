@@ -58,7 +58,7 @@ logger.setLevel(logging.DEBUG)
 
 # Local imports
 from mocks import mock_scanner
-from new_base_scan_2 import NIDAQScan
+from new_base_scan_3 import NIDAQScan
 from Shutters_backend import NIDAQShuttersBackend
 
 from typing import Tuple
@@ -163,39 +163,34 @@ class ShuttersWindow(QWidget):
 
         # Botones útiles abajo: Close / All off
         btn_row = QHBoxLayout()
-        btn_all_off = QPushButton("All OFF")
-        btn_all_off.clicked.connect(self._all_off)
+        # btn_all_off = QPushButton("All OFF")
+        # btn_all_off.clicked.connect(self._all_off)
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.hide)
-        btn_row.addWidget(btn_all_off)
+        # btn_row.addWidget(btn_all_off)
         btn_row.addStretch(1)
         btn_row.addWidget(btn_close)
         main_layout.addLayout(btn_row)
 
         self.setLayout(main_layout)
 
-    def _handle_shutter_toggle(self, shutter_id, state, checked):
-        """Called when a radio button toggles. Solo actuamos cuando checked==True."""
-        if not checked:
-            return
-        try:
-            # set_state escribe en el hardware (o lo simula)
-            self.shutters.set_state(shutter_id, state)
-        except Exception as e:
-            logging.error("Error setting shutter %s to %s: %s", shutter_id, state, e)
+    def _handle_shutter_toggle(self, shutter_id, state):
+        print(f"[DEBUG] toggle: shutter={shutter_id}, state={state}")
+        self.shutters.set_state(shutter_id, state)
 
-    def _all_off(self):
-        """Apaga todos los shutters desde la UI (y actualiza los radio buttons)."""
-        for s_id in list(self._groups.keys()):
-            try:
-                self.shutters.set_state(s_id, "off")
-                # actualizar radio buttons
-                for btn in self._groups[s_id].buttons():
-                    if btn.property("state_value") == "off":
-                        btn.setChecked(True)
-                        break
-            except Exception as e:
-                logging.error("Error al apagar shutter %s: %s", s_id, e)
+
+    # def _all_off(self):
+    #     """Apaga todos los shutters desde la UI (y actualiza los radio buttons)."""
+    #     for s_id in list(self._groups.keys()):
+    #         try:
+    #             self.shutters.set_state(s_id, "off")
+    #             # actualizar radio buttons
+    #             for btn in self._groups[s_id].buttons():
+    #                 if btn.property("state_value") == "off":
+    #                     btn.setChecked(True)
+    #                     break
+    #         except Exception as e:
+    #             logging.error("Error al apagar shutter %s: %s", s_id, e)
 
 #  Frontend Interface
 class FrontEnd(QMainWindow):
@@ -1189,7 +1184,7 @@ class FrontEnd(QMainWindow):
 if __name__ == "__main__":
     # scanner = mock_scanner()
     backend = NIDAQShuttersBackend()
-    scanner = NIDAQScan(shutter_backend=backend)
+    scanner = NIDAQScan(backend)
     app = QApplication(sys.argv)
     # app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
 

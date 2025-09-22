@@ -21,7 +21,7 @@ class ShuttersBackend:
     def __init__(self, n_shutters=4):
         # Estado inicial: todos apagados
         self.shutter_states = {i: "off" for i in range(n_shutters)}
-        self.shutter_states[0] = "auto"
+        
         self._start_callbacks: List[StartCallback] = []
         self._end_callbacks: List[EndCallback] = []
 
@@ -36,17 +36,18 @@ class ShuttersBackend:
     def get_state(self, shutter_id):
         return self.shutter_states[shutter_id]
 
-    def reset_all(self):
-        for s_id in self.shutter_states:
-            self.shutter_states[s_id] = "off"
-        print("[BACKEND] Todos los shutters apagados")
+    # def reset_all(self):
+    #     for s_id in self.shutter_states:
+    #         self.shutter_states[s_id] = "off"
+    #     print("[BACKEND] Todos los shutters apagados")
 
 
 class NIDAQShuttersBackend(ShuttersBackend):
     def __init__(self, n_shutters=4, device="Dev1"):
+        
+        super().__init__(n_shutters)
         self._start_callbacks: List[StartCallback] = []
         self._end_callbacks: List[EndCallback] = []
-        super().__init__(n_shutters)
 
         self.device = device
         self.tasks = {}
@@ -68,7 +69,9 @@ class NIDAQShuttersBackend(ShuttersBackend):
         elif state == "off":
             self.tasks[shutter_id].write(False)
         elif state == "auto":
+            # self.shutter_states[shutter_id] = "auto"
             pass
+            
     def register_callbacks(self,
                           shutter_start_callback: Optional[StartCallback] = None,
                           shutter_end_callback: Optional[EndCallback] = None
@@ -82,6 +85,7 @@ class NIDAQShuttersBackend(ShuttersBackend):
         print("[DEBUG] Ejecutando START callbacks")
         for s_id, state in self.shutter_states.items():
             print(f" Shutter {s_id+1} state={state}")
+            
             
             if state == "auto":
                 self.tasks[s_id].write(True)
