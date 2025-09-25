@@ -189,7 +189,9 @@ class _NIDAQScanThread(threading.Thread):
         line_valida = np.concatenate([line_ida, line_vuelta])
 
         return line_valida, line_ida, line_vuelta
-    def channel_configuration(self,ao_task, ci_task,xy_signal, number_of_points,slow_chan,fast_chan):
+   
+    
+    def channel_configuration(self, mode, ao_task, ci_task,xy_signal, number_of_points,slow_chan,fast_chan):
         ao_task.ao_channels.add_ao_voltage_chan(slow_chan)  # slow
         ao_task.ao_channels.add_ao_voltage_chan(fast_chan)  # fast
         
@@ -202,7 +204,7 @@ class _NIDAQScanThread(threading.Thread):
         # Configure AO timing
         ao_task.timing.cfg_samp_clk_timing(
             rate=self.config.sample_rate,
-            sample_mode=AcquisitionType.FINITE,
+            sample_mode=mode,
             samps_per_chan= number_of_points
         )
         
@@ -219,15 +221,17 @@ class _NIDAQScanThread(threading.Thread):
         ci_task.timing.cfg_samp_clk_timing(
             rate=self.config.sample_rate,
             source=f"/{self.config.device_name}/ao/SampleClock",
-            sample_mode=AcquisitionType.FINITE,
+            sample_mode= mode,
             samps_per_chan = number_of_points
         )
         
         writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
         number_of_samples_written_signal = ao_task.write(xy_signal, auto_start=False)
     
+    
 
     def run(self):
+        daq_acq_modes = [AcquisitionType.FINITE, AcquisitionType.CONTINUOUS]
         chann_asign = {
                     "XY": {"fast": "Dev1/ao0", "slow": "Dev1/ao1"},
                     "XZ": {"fast": "Dev1/ao0", "slow": "Dev1/ao2"},
@@ -251,7 +255,7 @@ class _NIDAQScanThread(threading.Thread):
                 n_reloc_samples = len(self.fast_rel)
 
                 with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
-                    self.channel_configuration(ao_task,ci_task,xy_reloc_signal,
+                    self.channel_configuration(daq_acq_modes[0], ao_task,ci_task,xy_reloc_signal,
                     n_reloc_samples,slow_chan, fast_chan)
                     # Start tasks - CI first then AO
                     ci_task.start()
@@ -269,17 +273,14 @@ class _NIDAQScanThread(threading.Thread):
 
         try:
             frame_count = 0
-            while not self._stop_event.is_set():
+            with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
                 xy_signal = np.vstack((self.volt_slow, self.volt_fast))
-
-                with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
-                    # Configure analog 
-                    self.channel_configuration(ao_task, ci_task, xy_signal, self.frames_samples +
-                    flyback_samples, slow_chan, fast_chan)
-
-                    # Start tasks - CI first then AO
-                    ci_task.start()
-                    ao_task.start()
+                # Configure analog 
+                self.channel_configuration(daq_acq_modes[1], ao_task, ci_task, xy_signal, self.frames_samples +
+                flyback_samples, slow_chan, fast_chan)
+                ci_task.start()
+                ao_task.start()
+                while not self._stop_event.is_set():
 
                     # Process line by line
                     logger.info("Arrancando scan")
@@ -346,8 +347,8 @@ class _NIDAQScanThread(threading.Thread):
                         except Exception as e:
                             logger.warning(f"Flyback read skipped: {e}")
                             self._error_occurred = True
-                    # Aca termino un frame y su flyback
-                    frame_count += 1
+                # Aca termino un frame y su flyback
+                    frame_count += 1         
                     logger.info(f"Completed frame {frame_count}")
                 # End of NI-DAQ task
             # End of frame processing
@@ -363,7 +364,7 @@ class _NIDAQScanThread(threading.Thread):
                     xy_back_signal = np.vstack((self.slow_back_v, self.fast_back_v))
                     n_reloc_samples = len(self.fast_back_v)
                     with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
-                        self.channel_configuration(ao_task, ci_task, xy_back_signal, n_reloc_samples,
+                        self.channel_configuration(daq_acq_modes[0],ao_task, ci_task, xy_back_signal, n_reloc_samples,
                         slow_chan, fast_chan)
             
                         # Start tasks - CI first then AO
@@ -752,23 +753,23 @@ class NIDAQScan(BaseScan):
 
 
         #Esta parte grafica los voltajes generados. Mantener comentado a la hora de escanear.
-        def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
-            fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
-            ax1.scatter(t, x,s = 8, color ="black")
-            ax1.set_ylabel("Posición X [V]")
-            ax1.set_title(titulo)
-            ax1.grid(True)
-            ax2.scatter(t, y,s = 8, color="black")
-            ax2.set_ylabel("Posición Y [V]")
-            ax2.set_xlabel("Tiempo [us]")
-            ax2.grid(True)
-            plt.tight_layout()
-            plt.show()
-        if len(t_rel) > 1:
-              muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
-        muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
-        if len(t_back) > 1:
-                muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
+        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
+        #     ax1.scatter(t, x,s = 8, color ="black")
+        #     ax1.set_ylabel("Posición X [V]")
+        #     ax1.set_title(titulo)
+        #     ax1.grid(True)
+        #     ax2.scatter(t, y,s = 8, color="black")
+        #     ax2.set_ylabel("Posición Y [V]")
+        #     ax2.set_xlabel("Tiempo [us]")
+        #     ax2.grid(True)
+        #     plt.tight_layout()
+        #     plt.show()
+        # if len(t_rel) > 1:
+        #       muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
+        # muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
+        # if len(t_back) > 1:
+        #         muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
 
         # devolver/crear thread pasando solo señales slowa procesadas:
         return _NIDAQScanThread(
