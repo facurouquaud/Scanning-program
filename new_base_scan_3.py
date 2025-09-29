@@ -280,27 +280,21 @@ class _NIDAQScanThread(threading.Thread):
                 flyback_samples, slow_chan, fast_chan)
                 ci_task.start()
                 ao_task.start()
+                # time.sleep(1)
                 while not self._stop_event.is_set():
-
+                    
                     # Process line by line
                     logger.info("Arrancando scan")
                     for line_idx, (start, end) in enumerate(self.line_indices):
                         # Read line data
                         try:
                             line_total_data = ci_task.read(
-                                number_of_samples_per_channel=self.samples_per_line
+                                number_of_samples_per_channel=self.samples_per_line, timeout = 10
                             )
                         except Exception as e:
                             logger.error(f"DAQ read error on line {line_idx}: {e}")
                             self._stop_event.set()
                             break
-                        # Validate data length
-                        if len(line_total_data) != self.samples_per_line:
-                            logger.warning(
-                                f"Line {line_idx} length mismatch: "
-                                f"expected {self.samples_per_line}, got {len(line_total_data)}"
-                            )
-                            continue
                         try:
                             # Process data
                             line_data_both, line_data_first, line_data_second = self.pixel_filter(
@@ -341,15 +335,17 @@ class _NIDAQScanThread(threading.Thread):
                     if flyback_samples > 0:
                         try:
                             ci_task.read(
-                                number_of_samples_per_channel=flyback_samples
+                                number_of_samples_per_channel=flyback_samples, timeout  = 10
                             )
 
                         except Exception as e:
                             logger.warning(f"Flyback read skipped: {e}")
                             self._error_occurred = True
                 # Aca termino un frame y su flyback
-                    frame_count += 1         
+                    frame_count += 1      
+                    
                     logger.info(f"Completed frame {frame_count}")
+                        
                 # End of NI-DAQ task
             # End of frame processing
 
@@ -357,6 +353,7 @@ class _NIDAQScanThread(threading.Thread):
             logger.error(f"Critical scan error: {e}", exc_info=True)
             self._error_occurred = True
             self._stop_event.set()
+        
 
         finally:
             if self._stop_event.is_set():
