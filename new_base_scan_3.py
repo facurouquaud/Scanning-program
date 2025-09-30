@@ -265,8 +265,8 @@ class _NIDAQScanThread(threading.Thread):
                 )
                 self.ci_task.stop()
                 self.ao_task.stop()
-                self.ci_task.close()
                 self.ao_task.close()
+                self.ci_task.close()
                 self.ao_task = nidaqmx.Task()
                 self.ci_task = nidaqmx.Task()
                 logger.info("Relocación completada correctamente.")
@@ -357,41 +357,38 @@ class _NIDAQScanThread(threading.Thread):
             # End of NI-DAQ task
         # End of frame processing
         
-
         except Exception as e:
             logger.error(f"Critical scan error: {e}", exc_info=True)
             self._error_occurred = True
             self._stop_event.set()
-
-        finally:
-            self.ci_task.stop()
-            self.ao_task.stop()
-            self.ci_task.close()
-            self.ao_task.close()
-            self.ao_task = nidaqmx.Task()
-            self.ci_task = nidaqmx.Task()
-            if self._stop_event.set():
-                try:
-                    xy_back_signal = np.vstack((self.slow_back_v, self.fast_back_v))
-                    n_reloc_samples = len(self.fast_back_v)
-                    self.channel_configuration(daq_acq_modes[0],self.ao_task, self.ci_task, xy_back_signal, n_reloc_samples,
-                    slow_chan, fast_chan)
-                    # Start tasks - CI first then AO
-                    self.ci_task.start()
-                    self.ao_task.start()
-                    # ao_task.write(xy_signal, auto_start=True)
-                    self.ci_task.read(
-                        number_of_samples_per_channel=n_reloc_samples)
-                    logger.info("Relocación al cero completada correctamente.")
-                    self.ci_task.stop()
-                    self.ao_task.stop()
-                    self.ci_task.close()
-                    self.ao_task.close()
-                except Exception as e:
-                    logger.error(f"Error en relocación: {e}")
-                    self._stop_event.set()
-                    return
-                logger.info("Scan completed successfully")
+        self.ci_task.stop()
+        self.ao_task.stop()
+        self.ci_task.close()
+        self.ao_task.close()
+        self.ao_task = nidaqmx.Task()
+        self.ci_task = nidaqmx.Task()
+        if self._stop_event.set():
+            try:
+                xy_back_signal = np.vstack((self.slow_back_v, self.fast_back_v))
+                n_reloc_samples = len(self.fast_back_v)
+                self.channel_configuration(daq_acq_modes[0],self.ao_task, self.ci_task, xy_back_signal, n_reloc_samples,
+                slow_chan, fast_chan)
+                # Start tasks - CI first then AO
+                self.ci_task.start()
+                self.ao_task.start()
+                # ao_task.write(xy_signal, auto_start=True)
+                self.ci_task.read(
+                    number_of_samples_per_channel=n_reloc_samples)
+                logger.info("Relocación al cero completada correctamente.")
+                self.ci_task.stop()
+                self.ao_task.stop()
+                self.ci_task.close()
+                self.ao_task.close()
+            except Exception as e:
+                logger.error(f"Error en relocación: {e}")
+                self._stop_event.set()
+                return
+            logger.info("Scan completed successfully")
             # elif self._stop_event.is_set():
             #     logger.info("Scan was interrupted")
             # else:
