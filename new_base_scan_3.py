@@ -12,7 +12,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Callable, Optional, List, Tuple
 import nidaqmx
-from nidaqmx.constants import AcquisitionType, Edge, Signal, TerminalConfiguration
+from nidaqmx.constants import AcquisitionType, Edge, Signal, TerminalConfiguration,TriggerType
 from nidaqmx.stream_writers import AnalogMultiChannelWriter
 from nidaqmx.errors import DaqError
 import scan_parameters
@@ -191,6 +191,8 @@ class _NIDAQScanThread(threading.Thread):
         return line_valida, line_ida, line_vuelta
    
     
+       
+    
     def channel_configuration(self, mode, ao_task, ci_task,xy_signal, number_of_points,slow_chan,fast_chan):
         ao_task.ao_channels.add_ao_voltage_chan(slow_chan)  # slow
         ao_task.ao_channels.add_ao_voltage_chan(fast_chan)  # fast
@@ -247,152 +249,205 @@ class _NIDAQScanThread(threading.Thread):
 
         # Ensure flyback_samples is non-negative
         flyback_samples = max(0, flyback_samples)
-        self.ao_task = nidaqmx.Task()
-        self.ci_task = nidaqmx.Task()
 
         # AO-only relocation - Mismo enfoque que el escaneo principal
         if self.fast_rel is not None and self.slow_rel is not None:
             try:
                 xy_reloc_signal = np.vstack((self.slow_rel, self.fast_rel))
                 n_reloc_samples = len(self.fast_rel)
-                self.channel_configuration(daq_acq_modes[0], self.ao_task,self.ci_task,xy_reloc_signal,
-                n_reloc_samples,slow_chan, fast_chan)
-                # Start tasks - CI first then AO
-                self.ci_task.start()
-                self.ao_task.start()
-                self.ci_task.read(
-                    number_of_samples_per_channel=n_reloc_samples
-                )
-                self.ci_task.stop()
-                self.ao_task.stop()
-                self.ao_task.close()
-                self.ci_task.close()
-                self.ao_task = nidaqmx.Task()
-                self.ci_task = nidaqmx.Task()
+
+                with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
+                    self.channel_configuration(daq_acq_modes[0], ao_task,ci_task,xy_reloc_signal,
+                    n_reloc_samples,slow_chan, fast_chan)
+                    # Start tasks - CI first then AO
+                    ci_task.start()
+                    ao_task.start()
+                    ci_task.read(
+                        number_of_samples_per_channel=n_reloc_samples
+                    )
+
+
                 logger.info("Relocación completada correctamente.")
             except Exception as e:
                 logger.error(f"Error en relocación: {e}")
                 self._stop_event.set()
                 return
-       
+
         try:
-            
             frame_count = 0
-            xy_signal = np.vstack((self.volt_slow, self.volt_fast))
-            # Configure analog 
-            self.channel_configuration(daq_acq_modes[1], self.ao_task, self.ci_task, xy_signal, self.frames_samples +
-            flyback_samples, slow_chan, fast_chan)
-            self.ci_task.start()
-            self.ao_task.start()
-            while not self._stop_event.is_set():
-                # Process line by line
-                logger.info("Arrancando scan")
-                for line_idx, (start, end) in enumerate(self.line_indices):
-                    # Read line data
-                    try:
-                        line_total_data = self.ci_task.read(
-                            number_of_samples_per_channel=self.samples_per_line
-                        )
-                    except Exception as e:
-                        logger.error(f"DAQ read error on line {line_idx}: {e}")
-                        self._stop_event.set()
-                        break
-                    # Validate data length
-                    if len(line_total_data) != self.samples_per_line:
-                        logger.warning(
-                            f"Line {line_idx} length mismatch: "
-                            f"expected {self.samples_per_line}, got {len(line_total_data)}"
-                        )
-                        continue
-                    try:
-                        # Process data
-                        line_data_both, line_data_first, line_data_second = self.pixel_filter(
-                            line_total_data,
-                            self.true_px,
-                            self.n_px_acc
-                        )
-
-                        # Select data based on scan mode
-                        if self.scan_params.scan_data.name == 'FIRST':
-                            current_line = line_data_first
-                        elif self.scan_params.scan_data.name == 'SECOND':
-                            current_line = line_data_second
-                        else:  # 'BOTH'
-                            current_line = line_data_both
-
-                        last_line = (line_idx == self.n_lines - 1)
-
-                        # Send to callbacks
-                        for callback in self._line_callbacks:
-                            try:
-                                if callback(current_line, line_idx, last_line):
-                                    self._stop_event.set()
-                            except Exception as e:
-                                logging.error(f"Callback error on line {line_idx}: {e}")
-
-                        # if self._stop_event.is_set():
-                        #       logger.info("Scan stopped by user request")
-                        #       break
-
-                    except Exception as e:
-                        logger.error(f"Processing error on line {line_idx}: {e}")
-                        self._stop_event.set()
-                        self._error_occurred  = True
-                        break
-                    time.sleep(1E-6)
-                # Read and discard flyback samples at end of frame
-                if flyback_samples > 0:
-                    try:
-                        self.ci_task.read(
-                            number_of_samples_per_channel=flyback_samples
-                        )
-
-                    except Exception as e:
-                        logger.warning(f"Flyback read skipped: {e}")
-                        self._error_occurred = True
-            # Aca termino un frame y su flyback
-                frame_count += 1         
-                logger.info(f"Completed frame {frame_count}")
+            with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
+                xy_signal = np.vstack((self.volt_slow, self.volt_fast))
+                # Configure analog 
+                self.channel_configuration(daq_acq_modes[1], ao_task, ci_task, xy_signal, self.frames_samples +
+                flyback_samples, slow_chan, fast_chan)
+                ci_task.start()
+                ao_task.start()
+                while not self._stop_event.is_set():
+                    logger.info("Arrancando scan (read full frame)")
+                    # Calculate how many samples to read for the whole frame (lines + possible flyback)
+                    total_frame_samples = self.frames_samples
+                    if flyback_samples > 0:
+                        total_frame_samples += flyback_samples
                 
-            # End of NI-DAQ task
-        # End of frame processing
-        
+                    # Read entire frame at once
+                    try:
+                        frame_block = ci_task.read(number_of_samples_per_channel=total_frame_samples)
+                    except Exception as e:
+                        logger.error(f"DAQ read error for frame {frame_count}: {e}")
+                        self._stop_event.set()
+                        break
+                
+                    # Validate length
+                    if len(frame_block) != total_frame_samples:
+                        logger.warning(
+                            f"Frame length mismatch: expected {total_frame_samples}, got {len(frame_block)}"
+                        )
+                        # Decide: intentar continuar al siguiente frame o parar. Aquí marcamos error y salimos.
+                        self._error_occurred = True
+                        self._stop_event.set()
+                        break
+                
+                    # Procesar línea por línea a partir de frame_block
+                    for line_idx, (start, end) in enumerate(self.line_indices):
+                        try:
+                            # Slice safe: si end es inclusivo, usar end+1
+                            line_samples = frame_block[start:end]
+                
+                            # Procesar la línea con la función ya existente
+                            line_data_both, line_data_first, line_data_second = self.pixel_filter(
+                                line_samples,
+                                self.true_px,
+                                self.n_px_acc
+                            )
+                
+                            # Seleccionar según modo de scan
+                            if self.scan_params.scan_data.name == 'FIRST':
+                                current_line = line_data_first
+                            elif self.scan_params.scan_data.name == 'SECOND':
+                                current_line = line_data_second
+                            else:  # 'BOTH'
+                                current_line = line_data_both
+                
+                            last_line = (line_idx == self.n_lines - 1)
+                
+                            # Ejecutar callbacks (cada callback puede devolver True para detener)
+                            for callback in self._line_callbacks:
+                                try:
+                                    if callback(current_line, line_idx, last_line):
+                                        self._stop_event.set()
+                                except Exception as e:
+                                    logging.error(f"Callback error on line {line_idx}: {e}")
+                
+                            # Si algún callback pidió stop, salimos del loop de líneas
+                            if self._stop_event.is_set():
+                                logger.info("Scan stopped by callback request")
+                                break
+                
+                        except Exception as e:
+                            logger.error(f"Processing error on line {line_idx}: {e}")
+                            self._stop_event.set()
+                            self._error_occurred = True
+                            break
+                # while not self._stop_event.is_set():
+                #     # Process line by line
+                #     logger.info("Arrancando scan")
+                #     for line_idx, (start, end) in enumerate(self.line_indices):
+                #         # Read line data
+                #         try:
+                #             line_total_data = ci_task.read(
+                #                 number_of_samples_per_channel=self.samples_per_line
+                #             )
+                #         except Exception as e:
+                #             logger.error(f"DAQ read error on line {line_idx}: {e}")
+                #             self._stop_event.set()
+                #             break
+                #         # Validate data length
+                #         if len(line_total_data) != self.samples_per_line:
+                #             logger.warning(
+                #                 f"Line {line_idx} length mismatch: "
+                #                 f"expected {self.samples_per_line}, got {len(line_total_data)}"
+                #             )
+                #             continue
+                #         try:
+                #             # Process data
+                #             line_data_both, line_data_first, line_data_second = self.pixel_filter(
+                #                 line_total_data,
+                #                 self.true_px,
+                #                 self.n_px_acc
+                #             )
+
+                #             # Select data based on scan mode
+                #             if self.scan_params.scan_data.name == 'FIRST':
+                #                 current_line = line_data_first
+                #             elif self.scan_params.scan_data.name == 'SECOND':
+                #                 current_line = line_data_second
+                #             else:  # 'BOTH'
+                #                 current_line = line_data_both
+
+                #             last_line = (line_idx == self.n_lines - 1)
+
+                #             # Send to callbacks
+                #             for callback in self._line_callbacks:
+                #                 try:
+                #                     if callback(current_line, line_idx, last_line):
+                #                         self._stop_event.set()
+                #                 except Exception as e:
+                #                     logging.error(f"Callback error on line {line_idx}: {e}")
+
+                #             # if self._stop_event.is_set():
+                #             #       logger.info("Scan stopped by user request")
+                #             #       break
+
+                #         except Exception as e:
+                #             logger.error(f"Processing error on line {line_idx}: {e}")
+                #             self._stop_event.set()
+                #             self._error_occurred  = True
+                #             break
+                #         time.sleep(1E-6)
+                #     # Read and discard flyback samples at end of frame
+                #     if flyback_samples > 0:
+                #         try:
+                #             ci_task.read(
+                #                 number_of_samples_per_channel=flyback_samples
+                #             )
+
+                #         except Exception as e:
+                #             logger.warning(f"Flyback read skipped: {e}")
+                #             self._error_occurred = True
+                # # Aca termino un frame y su flyback
+                #     frame_count += 1         
+                #     logger.info(f"Completed frame {frame_count}")
+                # End of NI-DAQ task
+            # End of frame processing
+
         except Exception as e:
             logger.error(f"Critical scan error: {e}", exc_info=True)
             self._error_occurred = True
             self._stop_event.set()
-        self.ci_task.stop()
-        self.ao_task.stop()
-        self.ci_task.close()
-        self.ao_task.close()
-        self.ao_task = nidaqmx.Task()
-        self.ci_task = nidaqmx.Task()
-        if self._stop_event.set():
-            try:
-                xy_back_signal = np.vstack((self.slow_back_v, self.fast_back_v))
-                n_reloc_samples = len(self.fast_back_v)
-                self.channel_configuration(daq_acq_modes[0],self.ao_task, self.ci_task, xy_back_signal, n_reloc_samples,
+
+        try:
+            xy_back_signal = np.vstack((self.slow_back_v, self.fast_back_v))
+            n_reloc_samples = len(self.fast_back_v)
+            with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
+                self.channel_configuration(daq_acq_modes[0],ao_task, ci_task, xy_back_signal, n_reloc_samples,
                 slow_chan, fast_chan)
+    
                 # Start tasks - CI first then AO
-                self.ci_task.start()
-                self.ao_task.start()
+                ci_task.start()
+                ao_task.start()
                 # ao_task.write(xy_signal, auto_start=True)
-                self.ci_task.read(
+                ci_task.read(
                     number_of_samples_per_channel=n_reloc_samples)
-                logger.info("Relocación al cero completada correctamente.")
-                self.ci_task.stop()
-                self.ao_task.stop()
-                self.ci_task.close()
-                self.ao_task.close()
-            except Exception as e:
-                logger.error(f"Error en relocación: {e}")
-                self._stop_event.set()
-                return
-            logger.info("Scan completed successfully")
-            # elif self._stop_event.is_set():
-            #     logger.info("Scan was interrupted")
-            # else:
-            #     logger.error("Scan terminated with errors")
+            logger.info("Relocación al cero completada correctamente.")
+        except Exception as e:
+            logger.error(f"Error en relocación: {e}")
+            self._stop_event.set()
+            return
+        logger.info("Scan completed successfully")
+    # elif self._stop_event.is_set():
+    #     logger.info("Scan was interrupted")
+    # else:
+    #     logger.error("Scan terminated with errors")
 
     def stop(self):
         """Gracefully stop the scan."""
