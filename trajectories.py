@@ -152,7 +152,6 @@ def finish_scan(
     fast_back = np.full_like(t, fast_0)
     return t, fast_back, slow_back, n_points
 
-
 def scanning_2D(n_lines: int, fast_0: float, slow_0: float,
                 dwell_time: float, n_pix_acc: int, n_pix: int,
                 acc: float, v_f: float, px_size):
@@ -258,10 +257,8 @@ def scanning_2D(n_lines: int, fast_0: float, slow_0: float,
     t_total = np.concatenate([t_total, t_back])
     fast_total = np.concatenate([fast_total, fast_back])
     slow_total = np.concatenate([slow_total, slow_back])
-   
 
     return t_total, fast_total, slow_total, n_points
-
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt

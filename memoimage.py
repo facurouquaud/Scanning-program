@@ -11,7 +11,6 @@ ver fit_scan_data del otro archivo.
 
 import numpy as np
 from PIL import Image as _Image
-import matplotlib.pyplot as plt
 import logging as _lgn
 
 _lgr = _lgn.getLogger(__name__)
@@ -43,7 +42,6 @@ class MemoImage:
         self.data = np.zeros(
             (int(x_size_um / px_size_um), (int(y_size_um / px_size_um)))
         )
-        print(self.data.shape)
 
     def add_region(
         self,
@@ -73,7 +71,6 @@ class MemoImage:
 
         # Convertir la región en una imagen de Pillow
         region_image = _Image.fromarray(region)
-        # print(f"{px_size_um=} {x_center_um=} {y_center_um=} {dwell_time_us=}")
 
         # Redimensionar la imagen con el tamaño de píxeles adecuado
         n_pixel_x = max(1, int(region.shape[0] * px_size_um / self.px_size_um))
@@ -127,6 +124,7 @@ class MemoImage:
 
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
     muestra = np.eye(40, dtype=np.uint8) * 255
     flip = np.fliplr(muestra)
     dwell_time = 200

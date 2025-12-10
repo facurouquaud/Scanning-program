@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QLineEdit as _QLineEdit, QCheckBox as _QCheckBox)
 from PyQt5 import QtGui as _QtGui
 
 
-def create_float_lineedit(data: str = "", max_val: float = 200) -> _QLineEdit:
+def create_float_lineedit(data: str = "", max_val: float = 200.) -> _QLineEdit:
     """
     Create and fill.
 

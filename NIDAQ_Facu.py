@@ -108,8 +108,7 @@ class _NIDAQScanThread(threading.Thread):
                  samples_per_line: int,
                  total_samples: int, total_center_samples, total_back_samples,
                  line_indices: List[Tuple[int, int]],
-                 true_px: int, n_px_acc: int, n_lines: int, acc: float,
-                 config: _ScannerConfig,
+                 true_px: int, n_px_acc: int, n_lines: int, acc:int, config: _ScannerConfig,
                  scan_end_callbacks: list[callable],
                  *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -128,6 +127,7 @@ class _NIDAQScanThread(threading.Thread):
         self.total_back_samples = total_back_samples
         self.true_px = true_px
 
+        print(self.true_px)
         # Convert position to voltage (safe copy)
 
         # Validate voltage ranges
@@ -248,9 +248,7 @@ class _NIDAQScanThread(threading.Thread):
             sample_mode=mode,
             samps_per_chan=number_of_points
         )
-    
         # ao_task.triggers.start_trigger.cfg_dig_edge_start_trig(ci_task.triggers.start_trigger.term)
-
 
         # writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
         number_of_samples_written_signal = ao_task.write(xy_signal, auto_start=False)
@@ -274,14 +272,6 @@ class _NIDAQScanThread(threading.Thread):
         fast_chan = chann_asign[self.scan_params.scan_type]["fast"]
         slow_chan = chann_asign[self.scan_params.scan_type]["slow"]
 
-        # Select data based on scan mode
-        if self.config.scan_mode is ScanModes.FORWARD:
-            px_filter = make_pixel_filter_forward(self.true_px, self.n_px_acc)
-        elif self.config.scan_mode is ScanModes.BACKWARD:
-            px_filter = make_pixel_filter_backward(self.true_px, self.n_px_acc)
-        else:  # ScanModes.FULL_DATA
-            px_filter = make_pixel_filter_full(self.true_px, self.n_px_acc)
-
         """Main scanning loop."""
         # Precompute center and flyback samples as integers
         flyback_samples = self.frames_samples - (self.n_lines * self.samples_per_line)
@@ -299,6 +289,7 @@ class _NIDAQScanThread(threading.Thread):
                 # FIXME: BUILD FROM SCAN DATA (ojo Z)
                 internal_read_channel_name_fast = "Dev1/_ao0_vs_aognd"
                 internal_read_channel_name_slow = "Dev1/_ao1_vs_aognd"
+                ai_task = nidaqmx.Task()
                 ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_fast)
                 ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_slow)
                 last_position = ai_task.read()
@@ -340,6 +331,7 @@ class _NIDAQScanThread(threading.Thread):
                 # Arrancar los tasks de esta forma no debe sincronizarlos
                 # Hacer algo parecido a esto
                 # https://github.com/ni/nidaqmx-python/issues/162
+            
                 ci_task.start()
                 ao_task.start()
                 while not self._stop_event.is_set():
@@ -357,21 +349,20 @@ class _NIDAQScanThread(threading.Thread):
                             break
                         # print(sum(line_total_data))
                         try:
-                            # # Process data
-                            # line_data_both, line_data_first, line_data_second = self.pixel_filter(
-                            #     line_total_data,
-                            #     self.true_px,
-                            #     self.n_px_acc
-                            # )
+                            # Process data
+                            line_data_both, line_data_first, line_data_second = self.pixel_filter(
+                                line_total_data,
+                                self.true_px,
+                                self.n_px_acc
+                            )
 
-                            # # Select data based on scan mode
-                            # if self.config.scan_mode is ScanModes.FORWARD:
-                            #     current_line = line_data_first
-                            # elif self.config.scan_mode is ScanModes.BACKWARD:
-                            #     current_line = line_data_second
-                            # else:  # ScanModes.FULL_DATA
-                            #     current_line = line_data_both
-                            current_line = px_filter(line_total_data)
+                            # Select data based on scan mode
+                            if self.config.scan_mode is ScanModes.FORWARD:
+                                current_line = line_data_first
+                            elif self.config.scan_mode is ScanModes.BACKWARD:
+                                current_line = line_data_second
+                            else:  # ScanModes.FULL_DATA
+                                current_line = line_data_both
 
                             last_line = (line_idx == self.n_lines - 1)
 
@@ -416,6 +407,7 @@ class _NIDAQScanThread(threading.Thread):
                 with nidaqmx.Task() as ai_task:
                     internal_read_channel_name_fast = "Dev1/_ao0_vs_aognd"
                     internal_read_channel_name_slow  = "Dev1/_ao1_vs_aognd"
+                    ai_task = nidaqmx.Task()
                     ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_fast)
                     ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_slow)
                     last_position = ai_task.read()        
@@ -431,6 +423,7 @@ class _NIDAQScanThread(threading.Thread):
                         daq_acq_modes[0], ao_task, ci_task, xy_back_signal,
                         n_reloc_samples, slow_chan, fast_chan
                         )
+                    # Start tasks - CI first then AO
                     ci_task.start()
                     ao_task.start()
                     # ao_task.write(xy_signal, auto_start=True)
@@ -537,7 +530,6 @@ class NIDAQScan(BaseScan):
     def _execute_scan_start_callbacks(self):
         """Notify all start callbacks."""
         data_shape = self.get_data_shape()
-        print("DATA SHAPE", data_shape)
         for callback in self._start_callbacks:
             try:
                 callback(self.scan_params, data_shape, self.scan_mode.images_per_frame)
@@ -680,6 +672,13 @@ class NIDAQScan(BaseScan):
 
         fast_chan_convertion = chann_asign[self.scan_params.scan_type.value]["fast"]
         slow_chan_convertion = chann_asign[self.scan_params.scan_type.value]["slow"]
+        
+        channel_offset = {
+                    "XY": {"fast": 0, "slow": 0},
+                    "XZ": {"fast": 0, "slow": 4.5},
+                    "YZ": {"fast": 0, "slow": 4.5}
+                    }
+        slow_chan_offset = channel_offset[self.scan_params.scan_type.value]["slow"]
 
         # Calcular parámetros
         fast0, true_px, n_px_acc, _, v_f, acc, _ = self._calculate_parameters(
@@ -771,13 +770,13 @@ class NIDAQScan(BaseScan):
 
         volt = 1E6
         fast_rel_v = fast_rel_m * fast_chan_convertion * volt
-        slow_rel_v = slow_rel_m * slow_chan_convertion * volt
+        slow_rel_v = slow_rel_m * slow_chan_convertion * volt 
 
         volt_fast = scan_fast_m_shifted * fast_chan_convertion*volt
-        volt_slow = scan_slow_m_shifted * slow_chan_convertion*volt
+        volt_slow = scan_slow_m_shifted * slow_chan_convertion*volt 
 
         fast_back_v = back_fast_m_shifted * fast_chan_convertion*volt
-        slow_back_v = back_slow_m_shifted * slow_chan_convertion*volt
+        slow_back_v = back_slow_m_shifted * slow_chan_convertion*volt 
 
         # Clipping (chequeamos que no superen valores de voltajes)
         volt_fast = np.clip(volt_fast, -self.config.max_voltage, self.config.max_voltage)
@@ -786,7 +785,6 @@ class NIDAQScan(BaseScan):
         slow_rel_v = np.clip(slow_rel_v, -self.config.max_voltage, self.config.max_voltage)
         fast_back_v = np.clip(fast_back_v, -self.config.max_voltage, self.config.max_voltage)
         slow_back_v = np.clip(slow_back_v, -self.config.max_voltage, self.config.max_voltage)
-        print(f"Longitud de voltajes{len(volt_fast)}")
 
         # --- Comprobaciones rápidas ---
         print("Continuidad center->scan (V):", fast_rel_v[-1], volt_fast[0], "diff:", fast_rel_v[-1]-volt_fast[0])
@@ -812,7 +810,7 @@ class NIDAQScan(BaseScan):
             ax1.set_title(titulo)
             ax1.grid(True)
             ax2.scatter(t, y,s = 8, color="black")
-            ax2.set_ylabel("Posición Y [V]")
+            ax2.set_ylabel("Posición z [V]")
             ax2.set_xlabel("Tiempo [us]")
             ax2.grid(True)
             plt.tight_layout()
@@ -841,9 +839,8 @@ class NIDAQScan(BaseScan):
             true_px=true_px,
             n_px_acc=n_px_acc,
             n_lines=n_lines,
-            acc=acc,
-            config=thread_config,
-            scan_end_callbacks=self._stop_callbacks,
+            acc = acc,
+            config=thread_config
         )
         print(f"{n_px_acc=}")
 
@@ -864,4 +861,4 @@ class NIDAQScan(BaseScan):
         return _DETECTORS
 
     def get_scan_modes(self) -> list[ScanModeInfo]:
-        return [modo for modo  in ScanModes]
+        return [modo.value for modo in ScanModes]

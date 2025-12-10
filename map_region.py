@@ -5,16 +5,16 @@ Created on Tue Jan  7 11:28:11 2025
 
 @author: azelcer
 """
+from __future__ import annotations
 from PyQt5.QtWidgets import (QMainWindow as _QMainWindow, QWidget as _QWidget,
                              QVBoxLayout as _QVBoxLayout, QHBoxLayout as _QHBoxLayout,
                              QPushButton as _QPushButton, )
 from PyQt5 import QtGui as _QtGui
-from PyQt5.QtCore import pyqtSlot as _pyqtSlot
 import numpy as _np
 import logging as _lgn
-from PIL import Image as _Image
 import pyqtgraph as _pg
 from memoimage import MemoImage as _MemoImage
+from bounded_roi import BoundedROI as _ROI
 
 
 _lgr = _lgn.getLogger(__name__)
@@ -27,7 +27,6 @@ class MapWindow(_QMainWindow):
     Everytime scan region button is pressed, the current zoomed in scan data
     will be added to the this window. The scan data will be normalized and
     resized before being added to the map window.
-
     """
 
     def __init__(
@@ -48,21 +47,10 @@ class MapWindow(_QMainWindow):
         super().__init__(*args, **kwargs)
         self.setWindowTitle("Full Region")
         self._pixel_size_um = image_pixel_size_um
-        x_size_um =  image_extents_um[1] - image_extents_um[0]
-        y_size_um =  image_extents_um[3] - image_extents_um[2]
+        x_size_um = image_extents_um[1] - image_extents_um[0]
+        y_size_um = image_extents_um[3] - image_extents_um[2]
         self._memoimage = _MemoImage(x_size_um, y_size_um, image_pixel_size_um)
-        # Setup window layout and plot
         self.setup_GUI()
-
-        # # Connect main ROI's region change signal to update the ROI outline
-        # if self.main_roi is not None:
-        #     self.main_roi.sigRegionChanged.connect(self.update_roi)
-
-        # Connect to the parent's roi_visibility_changed signal
-        # if self.parent() is not None:
-        #     self.parent().roi_visibility_changed.connect(
-        #         self.handle_roi_visibility_change
-        #     )
 
     def setup_GUI(self):
         """Initializes interface layout and image plot components."""
@@ -91,14 +79,31 @@ class MapWindow(_QMainWindow):
 
         # Buttons
         btn_layout = _QHBoxLayout()
-        reset_btn =  _QPushButton("Clear")
-        reset_btn.clicked.connect(lambda x: (self._memoimage.clear(), self._update_image()))
+        reset_btn = _QPushButton("Clear")
+        reset_btn.clicked.connect(self.reset_contents)
         btn_layout.addWidget(reset_btn)
-        self._ROI_btn =  _QPushButton("Show ROI")
-        btn_layout.addWidget(self._ROI_btn)
         layout.addLayout(btn_layout)
         # Create ROI outline
-        # self.create_roi()
+        self._create_roi()
+
+    def _create_roi(self):
+        self._ROI = _ROI((0, 0,))
+        # self._ROI.addScaleHandle((0, 0,), (1., 1.,))
+        # self._ROI.addScaleHandle((1, 1,), (0., 0.,))
+        self._ROI.hide()
+        # self._ROI.setZValue(10)
+        self.plot_item.addItem(self._ROI)
+        # self._ROI.sigRegionChanged.connect(self._update_parent_roi)
+
+    def update_roi(self, center: tuple, data_range: float):
+        """Updates ROI position."""
+        self._ROI.setSize((data_range, data_range), update=False, finish=False)
+        self._ROI.setPos(center[0] - data_range/2, center[1] - data_range/2, update=False)
+        self._ROI.show()
+
+    def reset_contents(self):
+        self._memoimage.clear()
+        self._update_image()
 
     def update_image_transform(self):
         """
@@ -141,6 +146,7 @@ class MapWindow(_QMainWindow):
             return
         px_size_um = data_scan_range / scan_data.shape[0]
         self._memoimage.add_region(scan_data, px_size_um, *scan_data_center, dwell_time_us)
+        self.update_roi(scan_data_center, data_scan_range)
         self._update_image()
 
     def _update_image(self):
@@ -149,85 +155,10 @@ class MapWindow(_QMainWindow):
         self.image_item.setImage(self._memoimage.data, autoLevels=False)
         self.histogram.imageChanged(autoLevel=True)
 
-    # def create_roi(self):
-    #     """
-    #     Creates ROI outline based on ROI from the FrontEnd window.
-    #     """
-    #     if self.main_roi is not None:
-    #         # Get position and size from main ROI
-    #         roi_pos = self.main_roi.pos()
-    #         roi_size = self.main_roi.size()
-    #         roi_pos = [roi_pos.x(), roi_pos.y()]
-    #         roi_size = [roi_size.x(), roi_size.y()]
-    #     else:
-    #         # Use these values if main_roi is not provided
-    #         roi_pos = [self.init_center[0] - 1, self.init_center[1] - 1]
-    #         roi_size = [0, 0]
-
-    #     # Create the ROI outline
-    #     self.roi_outline = _pg.RectROI(
-    #         roi_pos, roi_size, pen=_pg.mkPen("r", width=2), movable=False
-    #     )
-    #     self.plot_item.addItem(self.roi_outline)
-
-    #     # Set initial visibility based on main ROI's visibility
-    #     if self.main_roi is not None and not self.main_roi.isVisible():
-    #         self.roi_outline.hide()
-
-    # def update_roi(self):
-    #     """
-    #     Updates ROI's outline position and size whenever main ROI is moved or
-    #     resized.
-    #     """
-    #     if self.main_roi is not None:
-    #         # Retrieve main ROI's position and size
-    #         roi_pos = self.main_roi.pos()
-    #         roi_size = self.main_roi.size()
-
-    #         if self.main_roi.isVisible():
-    #             # Update  ROI outline position
-    #             self.roi_outline.setPos(roi_pos.x(), roi_pos.y())
-    #             # Update ROI outline size
-    #             self.roi_outline.setSize([roi_size.x(), roi_size.y()])
-    #             # Ensure ROI outline is visible
-    #             if not self.roi_outline.isVisible():
-    #                 self.roi_outline.show()
-    #         else:
-    #             # Hide ROI outline if main ROI is not visible
-    #             if self.roi_outline.isVisible():
-    #                 self.roi_outline.hide()
-
-    # @_pyqtSlot(bool)
-    # def handle_roi_visibility_change(self, is_visible: bool):
-    #     """
-    #     Handles ROI visibility based on the map_region window
-
-    #      Parameters
-    #      ----------
-    #      is_visible : bool
-    #          Visibility state of main ROI
-    #     """
-    #     if is_visible:
-    #         self.roi_outline.show()
-    #     else:
-    #         self.roi_outline.hide()
-
     def closeEvent(self, event):
         """
         Parameters
         ----------
-        event : QCloseEvent
+            event : QCloseEvent
         """
-        # try:
-        #     self.main_roi.sigRegionChanged.disconnect(self.update_roi)
-        # except TypeError:
-        #     pass
-        # # Disconnect parent's ROI visibility signal
-        # if self.parent() is not None:
-        #     try:
-        #         self.parent().roi_visibility_changed.disconnect(
-        #             self.handle_roi_visibility_change
-        #         )
-        #     except TypeError:
-        #         pass
         super().closeEvent(event)
