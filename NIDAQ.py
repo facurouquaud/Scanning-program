@@ -806,23 +806,23 @@ class NIDAQScan(BaseScan):
         line_indices = [(i * samples_per_line, (i + 1) * samples_per_line) for i in range(n_lines)]
 
         # Esta parte grafica los voltajes generados. Mantener comentado a la hora de escanear.
-        def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
-            fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
-            ax1.scatter(t, x,s = 8, color ="black")
-            ax1.set_ylabel("Posición X [V]")
-            ax1.set_title(titulo)
-            ax1.grid(True)
-            ax2.scatter(t, y,s = 8, color="black")
-            ax2.set_ylabel("Posición Y [V]")
-            ax2.set_xlabel("Tiempo [us]")
-            ax2.grid(True)
-            plt.tight_layout()
-            plt.show()
-        if len(t_rel) > 1:
-              muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
-        muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
-        if len(t_back) > 1:
-                muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
+        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
+        #     ax1.scatter(t, x,s = 8, color ="black")
+        #     ax1.set_ylabel("Posición X [V]")
+        #     ax1.set_title(titulo)
+        #     ax1.grid(True)
+        #     ax2.scatter(t, y,s = 8, color="black")
+        #     ax2.set_ylabel("Posición Y [V]")
+        #     ax2.set_xlabel("Tiempo [us]")
+        #     ax2.grid(True)
+        #     plt.tight_layout()
+        #     plt.show()
+        # if len(t_rel) > 1:
+        #       muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
+        # muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
+        # if len(t_back) > 1:
+        #         muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
 
         # devolver/crear thread pasando solo señales slowa procesadas:
         return _NIDAQScanThread(
