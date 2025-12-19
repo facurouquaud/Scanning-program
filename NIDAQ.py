@@ -576,7 +576,7 @@ class NIDAQScan(BaseScan):
         #     self._thread = None
         #     self._execute_scan_stop_callbacks()
 
-    def _calculate_parameters(self, scan_width_fast: float, scan_width_slow: float, pixel_size: float,
+    def _calculate_parameters(self, scan_width_fast: float, pixel_size: float,
                           dwell_time: float, n_pix: int) -> Tuple:
         """
         Calcula parámetros de escaneo.
@@ -604,7 +604,6 @@ class NIDAQScan(BaseScan):
         # Debug: imprimir entradas (m, s)
         print("DEBUG _calculate_parameters inputs:", file=sys.stderr)
         print(f"  scan_width_fast (m): {scan_width_fast}", file=sys.stderr)
-        print(f"  scan_width_slow (m): {scan_width_slow}", file=sys.stderr)
         print(f"  pixel_size (m): {pixel_size}", file=sys.stderr)
         print(f"  dwell_time (s): {dwell_time}", file=sys.stderr)
         print(f"  n_pix: {n_pix}", file=sys.stderr)
@@ -613,7 +612,9 @@ class NIDAQScan(BaseScan):
         v_f = pixel_size / dwell_time
         t_acc_min = v_f / self.a_max
         n_acc_min = math.ceil(t_acc_min / dwell_time)
-        n_acc = max(int(n_acc_min), 4)  # Asegurar mínimo 4
+        n_acc = max(n_acc_min, 4)
+        if n_acc % 2 != 0:
+            n_acc += 1
         acc = v_f / (n_acc * dwell_time)
 
         # Debug: imprimir intermedios
@@ -625,7 +626,7 @@ class NIDAQScan(BaseScan):
         print(f"  acc (m/s^2): {acc}", file=sys.stderr)
 
         # Comprobaciones
-        if scan_width_fast > 100 or scan_width_slow > 100:  # si estas en metros, 100 m es enorme; tal vez querías µm
+        if scan_width_fast > 100:  # si estas en metros, 100 m es enorme; tal vez querías µm
             self._execute_scan_stop_callbacks()
             raise ValueError("Region out of range")
 
@@ -683,7 +684,7 @@ class NIDAQScan(BaseScan):
 
         # Calcular parámetros
         fast0, true_px, n_px_acc, _, v_f, acc, _ = self._calculate_parameters(
-            sfast, sslow, px_size, dwell_time, n_pix
+            sfast, px_size, dwell_time, n_pix
         )
 
         # generar recentrado solo si haslow center en params

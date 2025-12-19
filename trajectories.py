@@ -116,13 +116,13 @@ def finish_scan(
 
     Se mueve sólo en el eje lento, siguiendo la aceleración dada.
     """
-    # dfast = abs(fast_f - fast_0)
+    a_slow = a_max_slow
     dslow = abs(slow_f - slow_0)
     # t_fast = 2 * np.sqrt(dfast / a_max_fast)
-    t_slow = 2 * np.sqrt(dslow / a_max_slow)
+    t_slow = 2 * np.sqrt(dslow / a_slow)
 
     # a_fast = a_max_fast
-    a_slow = a_max_slow
+   
     # t_total = max(t_fast, t_slow)
     t_total = t_slow
 
@@ -218,31 +218,69 @@ def scanning_2D(n_lines: int, fast_0: float, slow_0: float,
         v_f * (idx_pix[mask5] - (n_pix + 3 * n_pix_acc)) * dwell_time
         )
 
-    # Deceleración final
     mask6 = (2 * n_pix + 4 * n_pix_acc >= idx_pix) & (idx_pix >= 2 * n_pix + 3 * n_pix_acc)
     t_dec_final = (idx_pix[mask6] - (2 * n_pix + 3 * n_pix_acc)) * dwell_time
+    
+    # El eje rápido sigue su deceleración normal
     fast[mask6] = (fast_0 + v_f * (n_pix * dwell_time) -
                    0.5 * acc * ((n_pix_acc * dwell_time) ** 2) -
                    v_f * n_pix * dwell_time - v_f * t_dec_final +
                    0.5 * acc * t_dec_final ** 2)
+    
+    # IMPORTANTE: En la deceleración final, el eje lento comienza a moverse
+    # Calculamos la fracción de tiempo de la deceleración que ha transcurrido
+    t_dec_total = n_pix_acc * dwell_time  # Tiempo total de deceleración
+    if t_dec_total > 0:
+        fraction = t_dec_final / t_dec_total
+        # El movimiento en Y ocurre linealmente durante la deceleración
+        # Comienza en slow_0 y termina en slow_0 - px_size
+        slow[mask6] = slow_0 - px_size * fraction
 
     # N líneas de escaneo
     num_points = len(t_local)
     t_offsets = np.arange(n_lines) * num_points * dwell_time
     t_total = np.tile(t_local, n_lines) + np.repeat(t_offsets, num_points)
+    
 
     fast_total = np.tile(fast, n_lines)
-    # x_total -= (x_total.max() + x_total.min()) / 2
+    
 
     slow_step = px_size
     slow_shifts = slow_0 - np.arange(n_lines) * slow_step
-    slow_offsets = np.repeat(slow_shifts, num_points)
-    # slow_total = np.tile(np.ones_like(slow)*slow_0, n_lines) + slow_offsets
-    slow_total = np.tile(slow, n_lines) + (slow_offsets - slow_0)
-    # slow_total -= (slow_total.max() + slow_total.min()) / 2
-
-    # le pido que n_lineso haga una subida mas en slow
-    # slow_total[-num_points:] = slow_total[-num_points - 1]
+    slow_total = np.zeros_like(t_total)
+    
+    for i in range(n_lines):
+        start_idx = i * num_points
+        end_idx = (i + 1) * num_points
+        
+        # Para líneas que no son la última
+        if i < n_lines - 1:
+            # El valor en Y al inicio de la línea (antes de mask6)
+            y_start = slow_shifts[i]
+            # El valor en Y al final de la línea (después del movimiento en mask6)
+            y_end = slow_shifts[i + 1]
+            
+            # Para los puntos que NO son mask6: valor constante y_start
+            # Para los puntos que SÍ son mask6: transición lineal de y_start a y_end
+            
+            # Primero, copiamos el patrón de slow de una línea
+            slow_line = slow.copy()
+            
+            # Reemplazamos los valores constantes (todos excepto mask6) por y_start
+            # Pero mantenemos la transición en mask6, escalada apropiadamente
+            # La transición en slow[mask6] va de slow_0 a slow_0 - px_size
+            # Queremos que vaya de y_start a y_end
+            
+            # Calculamos el offset base para esta línea
+            base_offset = y_start - slow_0
+            
+            # Aplicamos el offset base a toda la línea
+            slow_line += base_offset
+            slow_total[start_idx:end_idx] = slow_line
+            
+        else:
+            # Todos los puntos a slow_shifts[i]
+            slow_total[start_idx:end_idx] = slow_shifts[i]
 
     last_fast = -fast_0
     last_slow = slow_total[-1]
@@ -250,7 +288,7 @@ def scanning_2D(n_lines: int, fast_0: float, slow_0: float,
 
     # Garantizar que el último punto sea exactamente slow_0
     t_back, fast_back, slow_back, _ = finish_scan(
-        last_t, last_fast, last_slow, -fast_0, slow_0,dwell_time, acc, acc
+        last_t, last_fast, last_slow, -fast_0, slow_0, dwell_time, acc/4, acc/4
         )
 
     # Concatenar la vuelta
@@ -259,7 +297,6 @@ def scanning_2D(n_lines: int, fast_0: float, slow_0: float,
     slow_total = np.concatenate([slow_total, slow_back])
 
     return t_total, fast_total, slow_total, n_points
-
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
