@@ -521,7 +521,10 @@ class NIDAQScan(BaseScan):
         if params.line_length_fast <= 0 or params.line_length_slow <= 0:
             logger.error("Scan size must be positive")
             valid = False
-        if params.dwell_time <= 1E-1:
+        if params.line_length_fast > 100 or params.line_length_slow > 100:
+            logger.error("Scan size must be smaller")
+            valid = False
+        if params.dwell_time < 1:
             logger.error("Dwell time too small")
             valid = False
         if params.pixel_size <= 0:
@@ -594,19 +597,14 @@ class NIDAQScan(BaseScan):
         self.a_max = 130  # µm/ms²
 
         # --- PARÁMETROS FIJOS (documentados en SI) ---
-        # Originalmente 130 µm/ms^2 -> equivale a 130 m/s^2 (ver conversión en la explicación)
+        # Originalmente 130 µm/ms^2 -> equivale a 130 m/s^2 
 
         # Validaciones básicas
         if pixel_size <= 0 or dwell_time <= 0:
-            self._execute_scan_stop_callbacks()
+            self._execute_scan_start_callbacks()
             raise ValueError("Parameters must be positive")
 
-        # Debug: imprimir entradas (m, s)
-        print("DEBUG _calculate_parameters inputs:", file=sys.stderr)
-        print(f"  scan_width_fast (m): {scan_width_fast}", file=sys.stderr)
-        print(f"  pixel_size (m): {pixel_size}", file=sys.stderr)
-        print(f"  dwell_time (s): {dwell_time}", file=sys.stderr)
-        print(f"  n_pix: {n_pix}", file=sys.stderr)
+    
 
         # v_f en m/s (velocidad de muestreo = tamaño de píxel / tiempo por píxel)
         v_f = pixel_size / dwell_time
@@ -616,28 +614,45 @@ class NIDAQScan(BaseScan):
         if n_acc % 2 != 0:
             n_acc += 1
         acc = v_f / (n_acc * dwell_time)
+        # if acc > 90: #esto es un buen limite para movimientos de mucha aceleración
+        #     self._execute_scan_start_callbacks()
+        #     raise ValueError("Parameters not optimal")
+            
 
         # Debug: imprimir intermedios
-        print("DEBUG _calculate_parameters internals:", file=sys.stderr)
         print(f"  v_f (m/s): {v_f}", file=sys.stderr)
-        print(f"  t_acc_min (s): {t_acc_min}", file=sys.stderr)
-        print(f"  n_acc_min (samples): {n_acc_min}", file=sys.stderr)
-        print(f"  n_acc (samples, used): {n_acc}", file=sys.stderr)
         print(f"  acc (m/s^2): {acc}", file=sys.stderr)
 
         # Comprobaciones
-        if scan_width_fast > 100:  # si estas en metros, 100 m es enorme; tal vez querías µm
-            self._execute_scan_stop_callbacks()
+        if scan_width_fast > 100E-6:  # si estas en metros, 100 m es enorme; tal vez querías µm
+            self._execute_scan_start_callbacks()
             raise ValueError("Region out of range")
 
         if acc > self.a_max * 1.0001:  # margen pequeño
-            self._execute_scan_stop_callbacks()
+            self._execute_scan_start_callbacks()
             raise ValueError("Acceleration out of range")
 
         if n_pix > 500:
-            self._execute_scan_stop_callbacks()
+            self._execute_scan_start_callbacks()
             raise ValueError("number of pixels out of range")
-
+        if dwell_time < 1E-6:
+            self._execute_scan_start_callbacks()
+            raise ValueError("Dwell time too small")
+        if v_f > 0.2:
+            self._execute_scan_start_callbacks()
+            raise ValueError("V_scan too large")
+        if acc > 125.5:
+            self._execute_scan_start_callbacks()
+            raise ValueError("acc too large")
+        if n_acc > 17:
+            self._execute_scan_start_callbacks()
+            raise ValueError("n_pix_acc too large: check parameters")
+            
+            
+        print(f"n_pix_acc{n_acc}")
+        
+            
+     
         # x0: distancia recorrida durante la aceleración (en metros)
         fast0 = 0.5 * acc * ((n_acc * dwell_time) ** 2)
 
@@ -806,23 +821,23 @@ class NIDAQScan(BaseScan):
         line_indices = [(i * samples_per_line, (i + 1) * samples_per_line) for i in range(n_lines)]
 
         # Esta parte grafica los voltajes generados. Mantener comentado a la hora de escanear.
-        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
-        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
-        #     ax1.scatter(t, x,s = 8, color ="black")
-        #     ax1.set_ylabel("Posición X [V]")
-        #     ax1.set_title(titulo)
-        #     ax1.grid(True)
-        #     ax2.scatter(t, y,s = 8, color="black")
-        #     ax2.set_ylabel("Posición Y [V]")
-        #     ax2.set_xlabel("Tiempo [us]")
-        #     ax2.grid(True)
-        #     plt.tight_layout()
-        #     plt.show()
-        # if len(t_rel) > 1:
-        #       muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
-        # muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
-        # if len(t_back) > 1:
-        #         muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
+        def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+            fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
+            ax1.scatter(t, x,s = 8, color ="black")
+            ax1.set_ylabel("Posición X [V]")
+            ax1.set_title(titulo)
+            ax1.grid(True)
+            ax2.scatter(t, y,s = 8, color="black")
+            ax2.set_ylabel("Posición Y [V]")
+            ax2.set_xlabel("Tiempo [us]")
+            ax2.grid(True)
+            plt.tight_layout()
+            plt.show()
+        if len(t_rel) > 1:
+              muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
+        muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
+        if len(t_back) > 1:
+                muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
 
         # devolver/crear thread pasando solo señales slowa procesadas:
         return _NIDAQScanThread(
