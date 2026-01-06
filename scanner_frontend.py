@@ -58,6 +58,7 @@ from fname_server import FileNameServer
 # Local imports
 # from mocks import mock_scanner
 from drivers.NIDAQ import NIDAQScan as mock_scanner
+# from mocks import mock_scanner as mock_scanner
 from bounded_roi import BoundedROI
 
 
