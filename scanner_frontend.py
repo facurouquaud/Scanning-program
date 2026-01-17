@@ -50,7 +50,8 @@ import PyQt5.QtGui as QtGui
 import pyqtgraph as pg
 import scan_parameters
 import base_scan
-from utils import pyqtutils
+# from utils import pyqtutils
+import pyqtutils
 from map_region import MapWindow
 import logging
 from fname_server import FileNameServer
@@ -58,7 +59,7 @@ from fname_server import FileNameServer
 # Local imports
 # from mocks import mock_scanner
 from drivers.NIDAQ import NIDAQScan as mock_scanner
-# from mocks import mock_scanner as mock_scanner
+#from mocks import mock_scanner as mock_scanner
 from bounded_roi import BoundedROI
 
 
@@ -155,7 +156,7 @@ class ScanImage(QObject):
         row = idx % MAX_ROWS
         col = idx // MAX_ROWS
         pi = glw.addPlot(row, col)
-        pi.invertY(True)
+        pi.invertY(False)
         self._plot_item = pi
 
         pi.setAspectLocked(True)
@@ -579,6 +580,7 @@ class FrontEnd(QMainWindow):
         self._detector_db.addItems(self.scanner.get_detectors())
         grid_layout.addWidget(QLabel("Detector:"), 6, 0)
         grid_layout.addWidget(self._detector_db, 6, 1)
+        self._detector_db.currentTextChanged.connect(self._on_detector_change)
 
         self._scanmode_db = QComboBox(self)
         self._scanmode_db.addItems([_ for _ in self._scan_modes])
@@ -719,6 +721,12 @@ class FrontEnd(QMainWindow):
         self._create_scan_images()  # Esto resetea los parámetros al recrear los ROIs
         self._set_scan_params(old_scan_params)  # Suci sucio
         self.update_roi(self._scan_params.center, self._scan_params.line_length_fast)
+    def _on_detector_change(self, value: str):
+        """Cuando cambia el detector en el front."""
+        self.update_parameters()  
+
+        self.scanner.set_detector(value)  
+
 
     @pyqtSlot(QAbstractButton, bool)
     def _on_scan_type_change(self, button: QRadioButton, checked: bool):

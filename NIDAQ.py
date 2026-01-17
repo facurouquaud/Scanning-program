@@ -32,7 +32,13 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 
-_DETECTORS = ["APD", "PMT"]
+_DETECTORS = ["APD1(R)","APD2(A)", "PMT"]
+_DETECTOR_TO_CI_CHANNEL = {
+    "APD1(R)": "ctr0",
+    "APD2(A)": "ctr1",
+    "PMT": "ctr0",  # si PMT usa otro counter, cambialo acá
+}
+
 _MIN_X_UM, _MIN_Y_UM, _MIN_Z_UM = 0., 0., 0
 _MAX_X_UM, _MAX_Y_UM, _MAX_Z_UM = 100., 100., 100.
 
@@ -662,6 +668,21 @@ class NIDAQScan(BaseScan):
         """Actualiza la posición actual del escáner."""
         self.current_position = np.array([fast, slow])
         logger.info(f"Posición actual actualizada: ({fast}, {slow}) µm")
+    def set_detector(self, detector_name: str):
+        """Llamado desde el frontend. Ajusta automáticamente el counter."""
+        _DETECTOR_TO_CI_CHANNEL = {
+            "APD1(R)": "ctr0",
+            "APD2(A)": "ctr1",
+            "PMT": "ctr0",
+        }
+    
+        if detector_name not in _DETECTORS:
+            logger.warning(f"Detector no reconocido: {detector_name}. Uso ctr0 por defecto.")
+            self.config.ci_channel = "ctr0"
+            return
+    
+        self.config.ci_channel = _DETECTOR_TO_CI_CHANNEL[detector_name]
+        logger.info(f"Detector seleccionado: {detector_name} -> CI channel: {self.config.ci_channel}")
 
     def _create_scan_thread(self) -> _NIDAQScanThread:
 
@@ -840,6 +861,8 @@ class NIDAQScan(BaseScan):
         #         muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
 
         # devolver/crear thread pasando solo señales slowa procesadas:
+        logger.info(f"SCAN VA A USAR CI CHANNEL: {self.config.ci_channel}")
+
         return _NIDAQScanThread(
             params=params,
             line_callbacks=self._line_callbacks,
