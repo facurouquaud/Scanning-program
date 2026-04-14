@@ -32,13 +32,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 
-_DETECTORS = ["APD1(R)","APD2(A)", "PMT"]
-_DETECTOR_TO_CI_CHANNEL = {
-    "APD1(R)": "ctr0",
-    "APD2(A)": "ctr1",
-    "PMT": "ctr0",  # si PMT usa otro counter, cambialo acá
-}
-
+_DETECTORS = ["APD_R", "APD_A","PMT"]
 _MIN_X_UM, _MIN_Y_UM, _MIN_Z_UM = 0., 0., 0
 _MAX_X_UM, _MAX_Y_UM, _MAX_Z_UM = 100., 100., 100.
 
@@ -260,6 +254,43 @@ class _NIDAQScanThread(threading.Thread):
 
         # writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
         number_of_samples_written_signal = ao_task.write(xy_signal, auto_start=False)
+        
+    def channel_configuration_no_pulse(self, mode, ao_task, ci_task,
+                                  xy_signal, number_of_points, slow_chan, fast_chan):
+            """Configura los canalaes"""
+            ao_task.ao_channels.add_ao_voltage_chan(slow_chan)  # slow
+            ao_task.ao_channels.add_ao_voltage_chan(fast_chan)  # fast
+
+
+            # Configure AO timing
+            ao_task.timing.cfg_samp_clk_timing(
+                rate=self.config.sample_rate,
+                sample_mode=mode,
+                samps_per_chan= number_of_points
+            )
+
+            # Configure counter input
+            ci_chan = ci_task.ci_channels.add_ci_count_edges_chan(
+                f"{self.config.device_name}/{self.config.ci_channel}",
+                edge=Edge.RISING
+            )
+            ci_chan.ci_count_edges_count_reset_enable = True
+            ci_chan.ci_count_edges_count_reset_term = ao_task.timing.samp_clk_term
+            ci_chan.ci_count_edges_count_reset_active_edge = Edge.RISING
+
+            # Sync CI with AO sample clock
+            ci_task.timing.cfg_samp_clk_timing(
+                rate=self.config.sample_rate,
+                source=f"/{self.config.device_name}/ao/SampleClock",
+                sample_mode=mode,
+                samps_per_chan=number_of_points
+            )
+        
+            # ao_task.triggers.start_trigger.cfg_dig_edge_start_trig(ci_task.triggers.start_trigger.term)
+
+
+            # writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
+            number_of_samples_written_signal = ao_task.write(xy_signal, auto_start=False)
 
     def _execute_scan_stop_callbacks(self):
         """Notify all stop callbacks."""
@@ -314,10 +345,10 @@ class _NIDAQScanThread(threading.Thread):
             )
             xy_init_signal = np.vstack((self.slow_init_frame , self.fast_init_frame))
             n_init_samples = len(self.fast_init_frame)
-            print(f"la ida tiene {n_init_samples}")
+            print(f"la ida tiene {n_init}")
 
             with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
-                self.channel_configuration(
+                self.channel_configuration_no_pulse(
                     daq_acq_modes[0], ao_task, ci_task, xy_init_signal,
                     n_init_samples, slow_chan, fast_chan
                     )
@@ -433,7 +464,7 @@ class _NIDAQScanThread(threading.Thread):
                 n_reloc_samples = len(self.fast_back_v)
                 print(f"la vuelta tiene {n_reloc_samples}")
                 with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
-                    self.channel_configuration(
+                    self.channel_configuration_no_pulse(
                         daq_acq_modes[0], ao_task, ci_task, xy_back_signal,
                         n_reloc_samples, slow_chan, fast_chan
                         )
@@ -668,21 +699,6 @@ class NIDAQScan(BaseScan):
         """Actualiza la posición actual del escáner."""
         self.current_position = np.array([fast, slow])
         logger.info(f"Posición actual actualizada: ({fast}, {slow}) µm")
-    def set_detector(self, detector_name: str):
-        """Llamado desde el frontend. Ajusta automáticamente el counter."""
-        _DETECTOR_TO_CI_CHANNEL = {
-            "APD1(R)": "ctr0",
-            "APD2(A)": "ctr1",
-            "PMT": "ctr0",
-        }
-    
-        if detector_name not in _DETECTORS:
-            logger.warning(f"Detector no reconocido: {detector_name}. Uso ctr0 por defecto.")
-            self.config.ci_channel = "ctr0"
-            return
-    
-        self.config.ci_channel = _DETECTOR_TO_CI_CHANNEL[detector_name]
-        logger.info(f"Detector seleccionado: {detector_name} -> CI channel: {self.config.ci_channel}")
 
     def _create_scan_thread(self) -> _NIDAQScanThread:
 
@@ -861,8 +877,6 @@ class NIDAQScan(BaseScan):
         #         muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
 
         # devolver/crear thread pasando solo señales slowa procesadas:
-        logger.info(f"SCAN VA A USAR CI CHANNEL: {self.config.ci_channel}")
-
         return _NIDAQScanThread(
             params=params,
             line_callbacks=self._line_callbacks,
