@@ -224,7 +224,7 @@ class ScanImage(QObject):
         TODO: set parameters befor scanning.
         """
         self._guideline.setValue(
-            line_number * self._params.pixel_size + self._params.start_point[1]
+            -line_number * self._params.pixel_size + self._params.end_point[1]
         )
 
     def update_image(self, image: np.ndarray):
@@ -957,7 +957,6 @@ class FrontEnd(QMainWindow):
             si.update_image(img)
             si.update_guide_line(line_number)
         # self.histogram.imageChanged(autoLevel=True)
-        # self.update_guide_line(line_number)
 
         # Check if frame is complete
         if line_number == self._scan_params.true_px_num - 1:
@@ -1100,7 +1099,7 @@ class FrontEnd(QMainWindow):
         """
         self._guide_line.setValue(
             line_number * self._scan_params.pixel_size
-            + self._scan_params.start_point[1]
+            + self._scan_params.end_point[1]
         )
 
     def update_scan_button_label(self, running: bool):

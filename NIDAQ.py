@@ -329,8 +329,10 @@ class _NIDAQScanThread(threading.Thread):
         # AO-only relocation - Mismo enfoque que el escaneo principal
         # FIXME: ¿Para que usamos CI acá?
         print("Yendo al origen")
-        slow_0 = self.slow_rel[-1]
-        fast_0 = self.fast_rel[-1]
+        slow_0 = self.slow_rel[-1]/(1E6*0.04)  #unidades que toma generate (metros)
+        fast_0 = self.fast_rel[-1]/(1E6*0.04)
+        print(fast_0)
+        print(slow_0)
         try:
             with nidaqmx.Task() as ai_task:  # vuelta a la posición de descanso
                 # FIXME: BUILD FROM SCAN DATA (ojo Z)
@@ -338,12 +340,21 @@ class _NIDAQScanThread(threading.Thread):
                 internal_read_channel_name_slow = "Dev1/_ao1_vs_aognd"
                 ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_fast)
                 ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_slow)
-                last_position = ai_task.read()
-            _, self.fast_init_frame, self.slow_init_frame, n_init = generate_trajectory(
-                last_position, fast_0, slow_0, self.scan_params.dwell_time,
+                last_position_v = ai_task.read()
+                #last_position = last_position_v /(1E6*0.04)
+                last_position = [
+                last_position_v[0] / (1E6 * 0.04),  # fast channel
+                last_position_v[1] / (1E6 * 0.04)   # slow channel
+           ]
+                    #last_position = [0,0]
+            t, self.fast_init_frame, self.slow_init_frame, n_init = generate_trajectory(
+                last_position, fast_0, slow_0, self.scan_params.dwell_time*1E-6,
                 a_max_fast=self.acc, a_max_slow=self.acc
             )
             xy_init_signal = np.vstack((self.slow_init_frame , self.fast_init_frame))
+            xy_init_signal *= (1E6*0.04)
+            print(xy_init_signal)
+         
             n_init_samples = len(self.fast_init_frame)
             print(f"la ida tiene {n_init}")
 
@@ -363,6 +374,20 @@ class _NIDAQScanThread(threading.Thread):
             logger.error(f"Error en relocación: {e}")
             self._stop_event.set()
             return
+        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
+        #     ax1.scatter(t, x,s = 8, color ="black")
+        #     ax1.set_ylabel("Posición X [V]")
+        #     ax1.set_title(titulo)
+        #     ax1.grid(True)
+        #     ax2.scatter(t, y,s = 8, color="black")
+        #     ax2.set_ylabel("Posición Y [V]")
+        #     ax2.set_xlabel("Tiempo [us]")
+        #     ax2.grid(True)
+        #     plt.tight_layout()
+        #     plt.show()
+        # muestra_escaneo("Voltajes de recentrado",t,self.fast_init_frame,self.slow_init_frame)
+       
 
         print("Frames")
         try:
@@ -449,18 +474,27 @@ class _NIDAQScanThread(threading.Thread):
             logger.error(f"Critical scan error: {e}", exc_info=True)
             self._error_occurred = True
             self._stop_event.set()
+            
+            
+    
         try:
                 with nidaqmx.Task() as ai_task:
                     internal_read_channel_name_fast = "Dev1/_ao0_vs_aognd"
                     internal_read_channel_name_slow  = "Dev1/_ao1_vs_aognd"
                     ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_fast)
                     ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_slow)
-                    last_position = ai_task.read()        
+                    last_position_v = ai_task.read() 
+                    # last_position = last_position_v /(1E6*0.04)
+                    last_position = [
+                    last_position_v[0] / (1E6 * 0.04),  # fast channel
+                    last_position_v[1] / (1E6 * 0.04)   # slow channel
+               ]
                          
                 _, self.fast_back_v, self.slow_back_v, n_rel  = generate_trajectory(
-            last_position, 0, 0, self.scan_params.dwell_time, a_max_fast=self.acc, a_max_slow=self.acc
+            last_position, 0, 0, self.scan_params.dwell_time*1E-6, a_max_fast=self.acc, a_max_slow=self.acc
                 )
                 xy_back_signal = np.vstack((self.slow_back_v, self.fast_back_v))
+                xy_back_signal *= (1E6*0.04)
                 n_reloc_samples = len(self.fast_back_v)
                 print(f"la vuelta tiene {n_reloc_samples}")
                 with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
@@ -746,7 +780,7 @@ class NIDAQScan(BaseScan):
         if center is not None:
             # Preferir prev_center si existe (centro anterior en µm)
             fast_f_um = copy.deepcopy(params.start_point[0] * 1E-6)
-            slow_f_um = copy.deepcopy(2*params.end_point[1] * 1E-6)
+            slow_f_um = copy.deepcopy(params.end_point[1] * 1E-6)
             # x_f_um = params.start_point[0]*2
             # y_f_um =  params.start_point[1]*2
 
@@ -874,7 +908,7 @@ class NIDAQScan(BaseScan):
         #       muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
         # muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
         # if len(t_back) > 1:
-        #         muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
+        #           muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
 
         # devolver/crear thread pasando solo señales slowa procesadas:
         return _NIDAQScanThread(
