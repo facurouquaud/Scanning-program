@@ -223,9 +223,9 @@ def scanning_2D(n_lines: int, fast_0: float, slow_0: float,
     
     # El eje rápido sigue su deceleración normal
     fast[mask6] = (fast_0 + v_f * (n_pix * dwell_time) -
-                   0.5 * acc * ((n_pix_acc * dwell_time) ** 2) -
-                   v_f * n_pix * dwell_time - v_f * t_dec_final +
-                   0.5 * acc * t_dec_final ** 2)
+                    0.5 * acc * ((n_pix_acc * dwell_time) ** 2) -
+                    v_f * n_pix * dwell_time - v_f * t_dec_final +
+                    0.5 * acc * t_dec_final ** 2)
     
     # IMPORTANTE: En la deceleración final, el eje lento comienza a moverse
     # Calculamos la fracción de tiempo de la deceleración que ha transcurrido
@@ -234,7 +234,7 @@ def scanning_2D(n_lines: int, fast_0: float, slow_0: float,
         fraction = t_dec_final / t_dec_total
         # El movimiento en Y ocurre linealmente durante la deceleración
         # Comienza en slow_0 y termina en slow_0 - px_size
-        slow[mask6] = slow_0 - px_size * fraction
+        slow[mask6] = slow_0 + px_size * fraction
 
     # N líneas de escaneo
     num_points = len(t_local)
@@ -246,7 +246,7 @@ def scanning_2D(n_lines: int, fast_0: float, slow_0: float,
     
 
     slow_step = px_size
-    slow_shifts = slow_0 - np.arange(n_lines) * slow_step
+    slow_shifts = slow_0 + np.arange(n_lines) * slow_step
     slow_total = np.zeros_like(t_total)
     
     for i in range(n_lines):
@@ -288,7 +288,7 @@ def scanning_2D(n_lines: int, fast_0: float, slow_0: float,
 
     # Garantizar que el último punto sea exactamente slow_0
     t_back, fast_back, slow_back, _ = finish_scan(
-        last_t, last_fast, last_slow, -fast_0, slow_0, dwell_time, acc/4, acc/4
+        last_t, last_fast, last_slow, -fast_0, slow_0, dwell_time, acc/5, acc/5
         )
 
     # Concatenar la vuelta
@@ -297,6 +297,138 @@ def scanning_2D(n_lines: int, fast_0: float, slow_0: float,
     slow_total = np.concatenate([slow_total, slow_back])
 
     return t_total, fast_total, slow_total, n_points
+
+# def s_curve_position(t, j):
+#     """
+#     Posición para perfil S-curve con jerk constante.
+#     Parte desde reposo.
+#     """
+#     return (j / 6.0) * t**3
+
+
+# def s_curve_velocity(t, j):
+#     return 0.5 * j * t**2
+
+
+# def s_curve_acceleration(t, j):
+#     return j * t
+
+
+# def scanning_2D(
+#     n_lines: int,
+#     fast_0: float,
+#     slow_0: float,
+#     dwell_time: float,
+#     n_pix_acc: int,
+#     n_pix: int,
+#     j_max: float,
+#     v_f: float,
+#     px_size: float,
+# ):
+#     """
+#     Escaneo 2D con jerk limitado (S-curve).
+#     """
+
+#     if n_pix_acc <= 0 or n_pix <= 0:
+#         raise ValueError("n_pix_acc and n_pix must be positive")
+
+#     # Tiempo de aceleración
+#     t_acc = n_pix_acc * dwell_time
+
+#     # jerk necesario para llegar a v_f
+#     j = min(j_max, 2 * v_f / (t_acc**2))
+
+#     # Velocidad alcanzada realmente
+#     v_peak = 0.5 * j * t_acc**2
+
+#     # Distancia recorrida en aceleración
+#     x_acc = (j / 6) * t_acc**3
+
+#     # Número total de puntos por línea
+#     n_points = 4 * n_pix_acc + 2 * n_pix
+#     t_local = np.arange(n_points) * dwell_time
+#     idx = np.arange(n_points)
+
+#     fast = np.zeros(n_points)
+#     slow = np.full(n_points, slow_0)
+
+#     # =========================
+#     # Aceleración (S-curve)
+#     # =========================
+#     mask1 = idx < n_pix_acc
+#     t1 = idx[mask1] * dwell_time
+#     fast[mask1] = -fast_0 + s_curve_position(t1, j)
+
+#     # =========================
+#     # Velocidad constante +
+#     # =========================
+#     mask2 = (idx >= n_pix_acc) & (idx < n_pix_acc + n_pix)
+#     t2 = (idx[mask2] - n_pix_acc) * dwell_time
+#     fast[mask2] = (
+#         -fast_0 + x_acc + v_peak * t2
+#     )
+
+#     # =========================
+#     # Frenado (S-curve simétrica)
+#     # =========================
+#     mask3 = (idx >= n_pix_acc + n_pix) & (idx < 2 * n_pix_acc + n_pix)
+#     t3 = (idx[mask3] - (n_pix_acc + n_pix)) * dwell_time
+#     fast[mask3] = (
+#         -fast_0 + x_acc + v_peak * (n_pix * dwell_time)
+#         + v_peak * t3
+#         - s_curve_position(t3, j)
+#     )
+
+#     # =========================
+#     # Retorno (simétrico)
+#     # =========================
+#     offset = (
+#         -fast_0 + x_acc + v_peak * (n_pix * dwell_time)
+#         + v_peak * t_acc
+#         - x_acc
+#     )
+
+#     mask4 = (idx >= 2 * n_pix_acc + n_pix) & (idx < 3 * n_pix_acc + n_pix)
+#     t4 = (idx[mask4] - (2 * n_pix_acc + n_pix)) * dwell_time
+#     fast[mask4] = offset - s_curve_position(t4, j)
+
+#     mask5 = (idx >= 3 * n_pix_acc + n_pix) & (idx < 3 * n_pix_acc + 2 * n_pix)
+#     t5 = (idx[mask5] - (3 * n_pix_acc + n_pix)) * dwell_time
+#     fast[mask5] = (
+#         offset - x_acc - v_peak * t5
+#     )
+
+#     mask6 = idx >= (3 * n_pix_acc + 2 * n_pix)
+#     t6 = (idx[mask6] - (3 * n_pix_acc + 2 * n_pix)) * dwell_time
+#     fast[mask6] = (
+#         offset - x_acc - v_peak * (n_pix * dwell_time)
+#         - v_peak * t6
+#         + s_curve_position(t6, j)
+#     )
+
+#     # =========================
+#     # Movimiento eje lento SOLO en mask6
+#     # =========================
+#     t_dec_total = n_pix_acc * dwell_time
+#     if t_dec_total > 0:
+#         fraction = t6 / t_dec_total
+#         slow[mask6] = slow_0 - px_size * fraction
+
+#     # =========================
+#     # Replicación líneas
+#     # =========================
+#     t_offsets = np.arange(n_lines) * n_points * dwell_time
+#     t_total = np.tile(t_local, n_lines) + np.repeat(t_offsets, n_points)
+
+#     fast_total = np.tile(fast, n_lines)
+
+#     slow_total = np.zeros_like(t_total)
+#     for i in range(n_lines):
+#         start = i * n_points
+#         end = (i + 1) * n_points
+#         slow_total[start:end] = slow - i * px_size
+
+#     return t_total, fast_total, slow_total, n_points
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 

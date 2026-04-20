@@ -826,6 +826,7 @@ class NIDAQScan(BaseScan):
         t, scan_fast_m, scan_slow_m, samples_per_line = scanning_2D(
             n_lines, fast0, params.end_point[1] * 1E-6, dwell_time, n_px_acc, true_px, acc, v_f, px_size
         )
+        print(n_lines, dwell_time,acc, v_f, px_size)
 
         # --- CALCULAR OFFSETS EN METROS para asegurar continuidad ---
         # último punto del recentrado (en metros)
