@@ -224,7 +224,7 @@ class ScanImage(QObject):
         TODO: set parameters befor scanning.
         """
         self._guideline.setValue(
-            -line_number * self._params.pixel_size + self._params.end_point[1]
+            line_number * self._params.pixel_size + self._params.start_point[1]
         )
 
     def update_image(self, image: np.ndarray):
@@ -1098,7 +1098,7 @@ class FrontEnd(QMainWindow):
             Current scan line number
         """
         self._guide_line.setValue(
-            line_number * self._scan_params.pixel_size
+            +line_number * self._scan_params.pixel_size
             + self._scan_params.end_point[1]
         )
 
