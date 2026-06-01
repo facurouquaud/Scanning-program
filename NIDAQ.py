@@ -220,10 +220,10 @@ class _NIDAQScanThread(threading.Thread):
         ao_task.ao_channels.add_ao_voltage_chan(fast_chan)  # fast
 
         # Export sample clock for synchronization
-        ao_task.export_signals.export_signal(
-            signal_id=nidaqmx.constants.Signal.SAMPLE_CLOCK,
-            output_terminal="/Dev1/PFI0"
-        )
+        # ao_task.export_signals.export_signal(
+        #     signal_id=nidaqmx.constants.Signal.SAMPLE_CLOCK,
+        #     output_terminal="/Dev1/PFI0"
+        # )
 
         # Configure AO timing
         ao_task.timing.cfg_samp_clk_timing(
@@ -291,6 +291,26 @@ class _NIDAQScanThread(threading.Thread):
 
             # writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
             number_of_samples_written_signal = ao_task.write(xy_signal, auto_start=False)
+    def configure_marker_task(
+            self,
+            do_task,
+            marker_signal,
+            mode,
+            number_of_points,
+        ):
+        
+            do_task.do_channels.add_do_chan(
+                "Dev1/port0/line3"
+            )
+        
+            do_task.timing.cfg_samp_clk_timing(
+                rate=self.config.sample_rate,
+                source=f"/{self.config.device_name}/ao/SampleClock",
+                sample_mode=mode,
+                samps_per_chan=number_of_points
+            )
+        
+            do_task.write(marker_signal, auto_start=False)
 
     def _execute_scan_stop_callbacks(self):
         """Notify all stop callbacks."""
@@ -370,6 +390,7 @@ class _NIDAQScanThread(threading.Thread):
                 ci_task.read(
                     number_of_samples_per_channel=n_init_samples)
             logger.info("Relocación al cero completada correctamente.")
+            
         except Exception as e:
             logger.error(f"Error en relocación: {e}")
             self._stop_event.set()
@@ -392,16 +413,31 @@ class _NIDAQScanThread(threading.Thread):
         print("Frames")
         try:
             frame_count = 0
-            with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
+            marker_signal = np.zeros(self.frames_samples , dtype=bool)
+            for start, end in self.line_indices:
+                marker_signal[start] = True
+                marker_signal[end - 1] = True
+            flyback_region = marker_signal[3840:]
+
+            print("Markers en flyback:", np.count_nonzero(flyback_region))
+           
+            with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task, nidaqmx.Task() as do_task:
                 xy_signal = np.vstack((self.volt_slow, self.volt_fast))
                 # Configure analog
-                self.channel_configuration(
+                self.channel_configuration_no_pulse(
                     daq_acq_modes[1], ao_task, ci_task, xy_signal,
                     self.frames_samples + flyback_samples, slow_chan, fast_chan
+                    )
+                self.configure_marker_task(
+                        do_task,
+                        marker_signal,
+                        daq_acq_modes[1],
+                        self.frames_samples
                     )
                 # Arrancar los tasks de esta forma no debe sincronizarlos
                 # Hacer algo parecido a esto
                 # https://github.com/ni/nidaqmx-python/issues/162
+                do_task.start()
                 ci_task.start()
                 ao_task.start()
                 while not self._stop_event.is_set():
@@ -502,6 +538,7 @@ class _NIDAQScanThread(threading.Thread):
                         daq_acq_modes[0], ao_task, ci_task, xy_back_signal,
                         n_reloc_samples, slow_chan, fast_chan
                         )
+                    do_task.start()
                     ci_task.start()
                     ao_task.start()
                     # ao_task.write(xy_signal, auto_start=True)
