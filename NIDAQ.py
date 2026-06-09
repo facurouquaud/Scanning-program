@@ -321,6 +321,8 @@ class _NIDAQScanThread(threading.Thread):
                 logger.error(f"Stop callback error: {e}")
 
     def run(self):
+        
+
         daq_acq_modes = [AcquisitionType.FINITE, AcquisitionType.CONTINUOUS]
         # FIXME:  ¿Esto no venía en config?
         chann_asign = {
@@ -395,31 +397,42 @@ class _NIDAQScanThread(threading.Thread):
             logger.error(f"Error en relocación: {e}")
             self._stop_event.set()
             return
-        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
-        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
-        #     ax1.scatter(t, x,s = 8, color ="black")
-        #     ax1.set_ylabel("Posición X [V]")
+        # def muestra_escaneo(titulo,t,x,y):
+        #     fig, (ax1, ax2) = plt.subplots(2, figsize=(8,6), sharex=True)
+        
+        #     ax1.plot(t, x)
+        #     ax2.plot(t, y)
+        
         #     ax1.set_title(titulo)
-        #     ax1.grid(True)
-        #     ax2.scatter(t, y,s = 8, color="black")
-        #     ax2.set_ylabel("Posición Y [V]")
-        #     ax2.set_xlabel("Tiempo [us]")
-        #     ax2.grid(True)
+        
         #     plt.tight_layout()
-        #     plt.show()
+        
+        #     plt.savefig("trayectoria.png")
+        #     plt.close(fig)
         # muestra_escaneo("Voltajes de recentrado",t,self.fast_init_frame,self.slow_init_frame)
        
 
         print("Frames")
         try:
             frame_count = 0
-            marker_signal = np.zeros(self.frames_samples , dtype=bool)
+            samples_forward = self.true_px + 2*self.n_px_acc
+            marker_signal = np.zeros(self.frames_samples, dtype=bool)
+            
             for start, end in self.line_indices:
+                # índice de fin de la IDA dentro del bloque
+                end_ida = start + samples_forward   # primer sample DESPUÉS de la ida
+            
+                # 1er marker: inicio de IDA (pulso de 1 sample)
                 marker_signal[start] = True
-                marker_signal[end - 1] = True
-            flyback_region = marker_signal[3840:]
-
-            print("Markers en flyback:", np.count_nonzero(flyback_region))
+                # opcional pero recomendable para claridad:
+                if start + 1 < self.frames_samples:
+                    marker_signal[start + 1] = False
+            
+                # 2º marker: fin de IDA (pulso de 1 sample)
+                if end_ida < self.frames_samples:
+                    marker_signal[end_ida] = True
+                    if end_ida + 1 < self.frames_samples:
+                        marker_signal[end_ida + 1] = False
            
             with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task, nidaqmx.Task() as do_task:
                 xy_signal = np.vstack((self.volt_slow, self.volt_fast))
