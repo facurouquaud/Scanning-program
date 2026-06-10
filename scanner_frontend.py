@@ -18,7 +18,9 @@ NIDAQ.
 from __future__ import annotations
 import sys
 import numpy as np
-
+import json
+import pathlib
+from PyQt5.QtWidgets import QInputDialog, QMessageBox
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -56,7 +58,7 @@ import logging
 from fname_server import FileNameServer
 
 # Local imports
-# from mocks import mock_scanner
+from mocks import mock_scanner
 from drivers.NIDAQ import NIDAQScan as mock_scanner
 #from mocks import mock_scanner as mock_scanner
 from bounded_roi import BoundedROI
@@ -305,6 +307,9 @@ class FrontEnd(QMainWindow):
         super().__init__(*args, **kwargs)
 
         self._fname_s = fname_s or FileNameServer()
+        self._templates_file = pathlib.Path(self._fname_s.get_base_dir()) / "scan_templates.json"
+        self._scan_templates: dict = {}
+        self._load_scan_templates()
 
         self.scanner: base_scan.BaseScan = scanner
         scanner.register_callbacks(
@@ -352,6 +357,35 @@ class FrontEnd(QMainWindow):
 
         self._map_window = MapWindow((0, 20, 0, 20), 0.02, parent=self)
         self._map_window.show()
+    def _load_scan_templates(self):
+        try:
+            p = self._templates_file
+            if p.exists():
+                with p.open("rt") as fd:
+                    self._scan_templates = json.load(fd)
+            else:
+                # defaults
+                self._scan_templates = {
+                     "100x100": {"x_range": 100,  "y_range": 100,  "dwell_time": 20, "acceleration": 0.1, "num_pixels": 500, "scan_type": "XY", "scan_mode": self._scanmode_db.currentText(), "detector": self._detector_db.currentText()},
+                    "10x10": {"x_range": 10.0, "y_range": 10.0, "dwell_time": 100.0, "acceleration": 0.1, "num_pixels": 200, "scan_type": "XY", "scan_mode": self._scanmode_db.currentText(), "detector": self._detector_db.currentText()},
+                    "5x5":  {"x_range": 5.0,  "y_range": 5.0,  "dwell_time": 400.0, "acceleration": 0.1, "num_pixels": 40, "scan_type": "XY", "scan_mode": self._scanmode_db.currentText(), "detector": self._detector_db.currentText()},
+                
+                }
+                p.parent.mkdir(parents=True, exist_ok=True)
+                with p.open("wt") as fd:
+                    json.dump(self._scan_templates, fd, indent=2)
+        except Exception as e:
+            logger.error("Error loading templates: %s", e)
+            self._scan_templates = {}
+
+    def _save_scan_templates(self):
+        try:
+            p = self._templates_file
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("wt") as fd:
+                json.dump(self._scan_templates, fd, indent=2)
+        except Exception as e:
+            logger.error("Error saving templates: %s", e)
 
     def process_scanner_modes(self):
         self._scan_modes = {
@@ -587,6 +621,18 @@ class FrontEnd(QMainWindow):
         self._scanmode_db.currentTextChanged.connect(self._on_scanmode_change)
 
         grid_layout.setRowStretch(8, 1)
+        self._template_db = QComboBox(self)
+        self._template_db.addItem("Select template...")
+        self._template_db.addItems(sorted(self._scan_templates.keys()))
+        grid_layout.addWidget(QLabel("Templates:"), 8, 0)
+        grid_layout.addWidget(self._template_db, 8, 1)
+        self._load_template_btn = QPushButton("Load")
+        grid_layout.addWidget(self._load_template_btn, 8, 2)
+        self._save_template_btn = QPushButton("Save template")
+        grid_layout.addWidget(self._save_template_btn, 8, 3)
+        self._load_template_btn.clicked.connect(lambda: self._apply_selected_template(auto=False))
+        self._template_db.currentIndexChanged.connect(lambda _: self._apply_selected_template(auto=True))
+        self._save_template_btn.clicked.connect(self._save_current_as_template)
 
         # Store initial parameters for resetting
         self._initial_params = {
@@ -598,6 +644,64 @@ class FrontEnd(QMainWindow):
             "num_pixels": self.num_pixels_input.text(),
         }
 
+    def _apply_selected_template(self, auto: bool = True):
+        key = self._template_db.currentText()
+        if not key or key == "Select template...":
+            return
+        tpl = self._scan_templates.get(key)
+        if not tpl:
+            QMessageBox.warning(self, "Template", "Template not found")
+            return
+        try:
+            # validar y aplicar campos básicos
+            self.x_range_input.setText(f"{float(tpl['x_range']):.3f}")
+            self.y_range_input.setText(f"{float(tpl.get('y_range', tpl['x_range'])):.3f}")
+            self.dwell_time_input.setText(f"{float(tpl['dwell_time']):.3f}")
+            self.a_aux_input.setText(f"{float(tpl['acceleration']):.3f}")
+            self.num_pixels_input.setText(str(int(tpl['num_pixels'])))
+            # seleccionar tipo de scan (radio buttons)
+            st = tpl.get("scan_type", "XY")
+            for rb, stype in self._radiobuttons.items():
+                if stype.value == st:
+                    rb.setChecked(True)
+                    break
+            # seleccionar scan_mode si aplica
+            if "scan_mode" in tpl and tpl["scan_mode"] in [self._scanmode_db.itemText(i) for i in range(self._scanmode_db.count())]:
+                self._scanmode_db.setCurrentText(tpl["scan_mode"])
+            # seleccionar detector si aplica
+            if "detector" in tpl and tpl["detector"] in [self._detector_db.itemText(i) for i in range(self._detector_db.count())]:
+                self._detector_db.setCurrentText(tpl["detector"])
+            # actualizar parámetros calculados
+            self.update_parameters()
+        except Exception as e:
+            logger.error("Error applying template: %s", e)
+            QMessageBox.critical(self, "Template error", f"Invalid template values: {e}")
+    
+    def _save_current_as_template(self):
+        name, ok = QInputDialog.getText(self, "Save Template", "Template name:")
+        if not ok or not name.strip():
+            return
+        try:
+            tpl = {
+                "x_range": float(self.x_range_input.text()),
+                "y_range": float(self.y_range_input.text()),
+                "dwell_time": float(self.dwell_time_input.text()),
+                "acceleration": float(self.a_aux_input.text()),
+                "num_pixels": int(self.num_pixels_input.text()),
+                "scan_type": self._get_selected_scan_type().value,
+                "scan_mode": self._scanmode_db.currentText(),
+                "detector": self._detector_db.currentText(),
+            }
+        except Exception as e:
+            QMessageBox.critical(self, "Save template", f"Invalid parameter values: {e}")
+            return
+        self._scan_templates[name] = tpl
+        self._save_scan_templates()
+        # actualizar combo si no existía
+        if self._template_db.findText(name) == -1:
+            self._template_db.addItem(name)
+        QMessageBox.information(self, "Template saved", f"Template '{name}' saved.")
+    
     def create_positioner_dock(self):
         """Creates dockable window for positioner controls.
 
