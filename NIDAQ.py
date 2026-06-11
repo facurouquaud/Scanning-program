@@ -321,8 +321,6 @@ class _NIDAQScanThread(threading.Thread):
                 logger.error(f"Stop callback error: {e}")
 
     def run(self):
-        
-
         daq_acq_modes = [AcquisitionType.FINITE, AcquisitionType.CONTINUOUS]
         # FIXME:  ¿Esto no venía en config?
         chann_asign = {
@@ -397,42 +395,29 @@ class _NIDAQScanThread(threading.Thread):
             logger.error(f"Error en relocación: {e}")
             self._stop_event.set()
             return
-        # def muestra_escaneo(titulo,t,x,y):
-        #     fig, (ax1, ax2) = plt.subplots(2, figsize=(8,6), sharex=True)
-        
-        #     ax1.plot(t, x)
-        #     ax2.plot(t, y)
-        
+        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
+        #     ax1.scatter(t, x,s = 8, color ="black")
+        #     ax1.set_ylabel("Posición X [V]")
         #     ax1.set_title(titulo)
-        
+        #     ax1.grid(True)
+        #     ax2.scatter(t, y,s = 8, color="black")
+        #     ax2.set_ylabel("Posición Y [V]")
+        #     ax2.set_xlabel("Tiempo [us]")
+        #     ax2.grid(True)
         #     plt.tight_layout()
-        
-        #     plt.savefig("trayectoria.png")
-        #     plt.close(fig)
+        #     plt.show()
         # muestra_escaneo("Voltajes de recentrado",t,self.fast_init_frame,self.slow_init_frame)
        
 
         print("Frames")
         try:
             frame_count = 0
-            samples_forward = self.true_px + 2*self.n_px_acc
-            marker_signal = np.zeros(self.frames_samples, dtype=bool)
-            
+            marker_signal = np.zeros(self.frames_samples , dtype=bool)
             for start, end in self.line_indices:
-                # índice de fin de la IDA dentro del bloque
-                end_ida = start + samples_forward   # primer sample DESPUÉS de la ida
-            
-                # 1er marker: inicio de IDA (pulso de 1 sample)
                 marker_signal[start] = True
-                # opcional pero recomendable para claridad:
-                if start + 1 < self.frames_samples:
-                    marker_signal[start + 1] = False
-            
-                # 2º marker: fin de IDA (pulso de 1 sample)
-                if end_ida < self.frames_samples:
-                    marker_signal[end_ida] = True
-                    if end_ida + 1 < self.frames_samples:
-                        marker_signal[end_ida + 1] = False
+                marker_signal[end - 1] = True
+
            
             with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task, nidaqmx.Task() as do_task:
                 xy_signal = np.vstack((self.volt_slow, self.volt_fast))
@@ -830,7 +815,7 @@ class NIDAQScan(BaseScan):
         if center is not None:
             # Preferir prev_center si existe (centro anterior en µm)
             fast_f_um = copy.deepcopy(params.start_point[0] * 1E-6)
-            slow_f_um = copy.deepcopy(params.end_point[1] * 1E-6)
+            slow_f_um = copy.deepcopy(params.start_point[1] * 1E-6)
             # x_f_um = params.start_point[0]*2
             # y_f_um =  params.start_point[1]*2
 
@@ -943,23 +928,23 @@ class NIDAQScan(BaseScan):
         line_indices = [(i * samples_per_line, (i + 1) * samples_per_line) for i in range(n_lines)]
 
         # Esta parte grafica los voltajes generados. Mantener comentado a la hora de escanear.
-        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
-        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
-        #     ax1.scatter(t, x,s = 8, color ="black")
-        #     ax1.set_ylabel("Posición X [V]")
-        #     ax1.set_title(titulo)
-        #     ax1.grid(True)
-        #     ax2.scatter(t, y,s = 8, color="black")
-        #     ax2.set_ylabel("Posición Y [V]")
-        #     ax2.set_xlabel("Tiempo [us]")
-        #     ax2.grid(True)
-        #     plt.tight_layout()
-        #     plt.show()
-        # if len(t_rel) > 1:
-        #       muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
-        # muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
-        # if len(t_back) > 1:
-        #           muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
+        def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+            fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
+            ax1.scatter(t, x,s = 8, color ="black")
+            ax1.set_ylabel("Posición X [V]")
+            ax1.set_title(titulo)
+            ax1.grid(True)
+            ax2.scatter(t, y,s = 8, color="black")
+            ax2.set_ylabel("Posición Y [V]")
+            ax2.set_xlabel("Tiempo [us]")
+            ax2.grid(True)
+            plt.tight_layout()
+            plt.show()
+        if len(t_rel) > 1:
+              muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
+        muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
+        if len(t_back) > 1:
+                  muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
 
         # devolver/crear thread pasando solo señales slowa procesadas:
         return _NIDAQScanThread(
