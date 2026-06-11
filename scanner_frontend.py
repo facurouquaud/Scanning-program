@@ -631,6 +631,9 @@ class FrontEnd(QMainWindow):
         self._save_template_btn = QPushButton("Save template")
         grid_layout.addWidget(self._save_template_btn, 8, 3)
         self._load_template_btn.clicked.connect(lambda: self._apply_selected_template(auto=False))
+        self._delete_template_btn = QPushButton("Delete") 
+        grid_layout.addWidget(self._delete_template_btn, 9, 3) 
+        self._delete_template_btn.clicked.connect(self._delete_selected_template)
         self._template_db.currentIndexChanged.connect(lambda _: self._apply_selected_template(auto=True))
         self._save_template_btn.clicked.connect(self._save_current_as_template)
 
@@ -676,6 +679,35 @@ class FrontEnd(QMainWindow):
         except Exception as e:
             logger.error("Error applying template: %s", e)
             QMessageBox.critical(self, "Template error", f"Invalid template values: {e}")
+    def _delete_selected_template(self):
+        key = self._template_db.currentText()
+        if not key or key == "Select template...":
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete template",
+            f"Delete template '{key}'?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        # Remove from internal dict and save file
+        if key in self._scan_templates:
+            try:
+                del self._scan_templates[key]
+                self._save_scan_templates()
+            except Exception as e:
+                logger.error("Error deleting template %s: %s", key, e)
+                QMessageBox.critical(self, "Error", f"Could not delete template: {e}")
+                return
+        # Remove from combobox
+        idx = self._template_db.findText(key)
+        if idx != -1:
+            self._template_db.removeItem(idx)
+        # Optionally reset selection
+        self._template_db.setCurrentIndex(0)
+        QMessageBox.information(self, "Template deleted", f"Template '{key}' deleted.")
     
     def _save_current_as_template(self):
         name, ok = QInputDialog.getText(self, "Save Template", "Template name:")
