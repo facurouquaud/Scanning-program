@@ -333,9 +333,9 @@ class FrontEnd(QMainWindow):
         # Center position (x, y, z)
         self._center = np.array(
             (
-                10.0,
-                10.0,
-                3.0,
+                0,
+                0,
+                0,
             ),
             dtype=np.float64,
         )
@@ -951,7 +951,7 @@ class FrontEnd(QMainWindow):
         self.num_pixels_input.setText(self._initial_params["num_pixels"])
 
         # Reset center position
-        self._center = np.array((10.0, 10.0, 3.0), dtype=np.float64)
+        self._center = np.array((0, 0, 0), dtype=np.float64)
         for le, coord in zip(self._position_inputs, self._center):
             le.setText(f"{coord:.3f}")
 
@@ -1045,9 +1045,27 @@ class FrontEnd(QMainWindow):
         else:
             try:  # FIXME: send scan mode?
                 self._publish_filename()
-                self.scanner.start_scan(
-                    self._scan_params, self._scanmode_db.currentText()
-                )
+                detector_map = {
+                    "APD1": {"ci_channel": "ctr0", "ai_channel": None},
+                    "APD2": {"ci_channel": "ctr1", "ai_channel": None},
+                    "PMT":  {"ci_channel": None,   "ai_channel": f"{self.scanner.config.device_name}/ai2"},}
+
+                det = self._detector_db.currentText()
+                mapping = detector_map.get(det, {"ci_channel": None, "ai_channel": None})
+
+                # apply mapping to scanner.config (preferred)
+                if hasattr(self.scanner, "config"):
+                    if mapping.get("ci_channel") is not None:
+                        self.scanner.config.ci_channel = mapping["ci_channel"]
+                    # store ai channel names (may be None)
+                    setattr(self.scanner.config, "ai_channel", mapping.get("ai_channel", None))
+                else:
+                    # fallback if scanner has no config attribute
+                    self.scanner.ci_channel = mapping.get("ci_channel")
+                    self.scanner.ai_channel = mapping.get("ai_channel", None)
+
+                # now start scan
+                self.scanner.start_scan(self._scan_params, self._scanmode_db.currentText(), detector_name=det)
             except Exception as e:
                 logger.error("Error starting scan: %s (%s)", e, type(e))
 

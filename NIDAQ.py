@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 
-_DETECTORS = ["APD_R", "APD_A","PMT"]
+_DETECTORS = ["APD1", "APD2","PMT"]
 _MIN_X_UM, _MIN_Y_UM, _MIN_Z_UM = 0., 0., 0
 _MAX_X_UM, _MAX_Y_UM, _MAX_Z_UM = 100., 100., 100.
 
@@ -110,7 +110,7 @@ class _NIDAQScanThread(threading.Thread):
                  line_indices: List[Tuple[int, int]],
                  true_px: int, n_px_acc: int, n_lines: int, acc: float,
                  config: _ScannerConfig,
-                 scan_end_callbacks: list[callable],
+                 scan_end_callbacks: list[callable], detector: str = None,
                  *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.scan_params = params
@@ -127,6 +127,8 @@ class _NIDAQScanThread(threading.Thread):
         self.slow_back_v = slow_back_v
         self.total_back_samples = total_back_samples
         self.true_px = true_px
+        self.detector = (detector or "").upper() if detector else None
+
 
         # Convert position to voltage (safe copy)
 
@@ -311,6 +313,55 @@ class _NIDAQScanThread(threading.Thread):
             )
         
             do_task.write(marker_signal, auto_start=False)
+            
+    def channel_configuration_ai(
+            self,
+            mode,
+            ao_task,
+            ai_task,
+            xy_signal,
+            number_of_points,
+            slow_chan,
+            fast_chan,
+            ai_channel: str = None,
+           
+        ):
+      
+        # Configure AO channels (slow first then fast to match xy_signal stacking)
+        ao_task.ao_channels.add_ao_voltage_chan(slow_chan)
+        ao_task.ao_channels.add_ao_voltage_chan(fast_chan)
+        
+        # Configure AO timing (sample clock)
+        ao_task.timing.cfg_samp_clk_timing(
+            rate=self.config.sample_rate,
+            sample_mode=mode,
+            samps_per_chan=number_of_points,
+        )
+        
+        # Configure AI channels: use provided names or internal "_aoX_vs_aognd" readers
+        if ai_channel is None:
+            ai_channel = f"{self.config.device_name}/ai0"
+       
+        
+        ai_task.ai_channels.add_ai_voltage_chan(
+         ai_channel,
+         terminal_config=TerminalConfiguration.DIFF,  # o RSE según wiring/emulador
+         min_val=-6.0,
+         max_val=6.0,
+         )        
+        # Sync AI to AO SampleClock so reads align with outputs
+        ai_task.timing.cfg_samp_clk_timing(
+            rate=self.config.sample_rate,
+            source=f"/{self.config.device_name}/ao/SampleClock",
+            sample_mode=mode,
+            samps_per_chan=number_of_points,
+        )
+        
+        # Write AO signal (do not auto-start; caller will start tasks in the correct order)
+        number_of_samples_written_signal = ao_task.write(xy_signal, auto_start=False)
+        
+        return number_of_samples_written_signal
+
 
     def _execute_scan_stop_callbacks(self):
         """Notify all stop callbacks."""
@@ -408,107 +459,172 @@ class _NIDAQScanThread(threading.Thread):
         #     plt.tight_layout()
         #     plt.show()
         # muestra_escaneo("Voltajes de recentrado",t,self.fast_init_frame,self.slow_init_frame)
-       
+        use_ai = (self.detector == "PMT") or (getattr(self, "ai_channel", None) is not None)
+        if use_ai:
+           # AI (PMT) path — read voltages
+           with nidaqmx.Task() as ao_task, nidaqmx.Task() as ai_task:
+               xy_signal = np.vstack((self.volt_slow, self.volt_fast))
+               # configure AO + AI, pass ai channel names from thread/config
+               self.channel_configuration_ai(
+                   daq_acq_modes[1],
+                   ao_task,
+                   ai_task,
+                   xy_signal,
+                   self.frames_samples + flyback_samples,
+                   slow_chan,
+                   fast_chan,
+                   ai_channel=getattr(self, "ai_channel", None),
+                   
+               )
+               
+               # Start tasks in order (DO, AI, AO) so AI samples sync to AO clock
+               ai_task.start()
+               ao_task.start()
 
-        print("Frames")
-        try:
-            frame_count = 0
-            marker_signal = np.zeros(self.frames_samples , dtype=bool)
-            for start, end in self.line_indices:
-                marker_signal[start] = True
-                marker_signal[end - 1] = True
+               while not self._stop_event.is_set():
+                   logger.info("Arrancando scan (AI/PMT)")
+                   for line_idx, (start, end) in enumerate(self.line_indices):
+                       try:
+                           # Read voltages per sample for configured AI channels
+                           raw = ai_task.read(number_of_samples_per_channel=self.samples_per_line)
+                       except Exception as e:
+                           logger.error(f"AI read error on line {line_idx}: {e}")
+                           self._stop_event.set()
+                           break
 
-           
-            with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task, nidaqmx.Task() as do_task:
-                xy_signal = np.vstack((self.volt_slow, self.volt_fast))
-                # Configure analog
-                self.channel_configuration_no_pulse(
-                    daq_acq_modes[1], ao_task, ci_task, xy_signal,
-                    self.frames_samples + flyback_samples, slow_chan, fast_chan
-                    )
-                self.configure_marker_task(
-                        do_task,
-                        marker_signal,
-                        daq_acq_modes[1],
-                        self.frames_samples
-                    )
-                # Arrancar los tasks de esta forma no debe sincronizarlos
-                # Hacer algo parecido a esto
-                # https://github.com/ni/nidaqmx-python/issues/162
-                do_task.start()
-                ci_task.start()
-                ao_task.start()
-                while not self._stop_event.is_set():
-                    # Process line by line
-                    logger.info("Arrancando scan")
-                    for line_idx, (start, end) in enumerate(self.line_indices):
-                        # Read line data
-                        try:
-                            line_total_data = ci_task.read(
-                                number_of_samples_per_channel=self.samples_per_line
-                            )
-                        except Exception as e:  # nidaqmx.errors.DaqError
-                            logger.error(f"DAQ read error on line {line_idx}: {e}")
-                            self._stop_event.set()
-                            break
-                        # print(sum(line_total_data))
-                        try:
-                            # # Process data
-                            # line_data_both, line_data_first, line_data_second = self.pixel_filter(
-                            #     line_total_data,
-                            #     self.true_px,
-                            #     self.n_px_acc
-                            # )
+                       # Convert read result to 1D numpy voltages vector (choose first AI channel if multiple)
+                       arr = np.asarray(raw)
+                       # ai_task.read may return scalar, 1D or 2D depending on channels; flatten and pick channel 0 if needed
+                       if arr.ndim == 0:
+                           line_arr = np.atleast_1d(arr).astype(float)
 
-                            # # Select data based on scan mode
-                            # if self.config.scan_mode is ScanModes.FORWARD:
-                            #     current_line = line_data_first
-                            # elif self.config.scan_mode is ScanModes.BACKWARD:
-                            #     current_line = line_data_second
-                            # else:  # ScanModes.FULL_DATA
-                            #     current_line = line_data_both
-                            current_line = px_filter(line_total_data)
+                       elif arr.ndim == 1:
+                           line_arr = arr.astype(float)
 
-                            last_line = (line_idx == self.n_lines - 1)
+                       else:
+                           # shape (n_channels, n_samples) or (n_samples, n_channels) — normalize to 1D samples for first channel
+                           # prefer (n_channels, n_samples)
+                           if arr.shape[0] >= 1 and arr.shape[1] == self.samples_per_line:
+                               line_arr = arr[0].astype(float)
 
-                            # Send to callbacks
-                            for callback in self._line_callbacks:
-                                try:
-                                    if callback(current_line, line_idx, last_line):
-                                        self._stop_event.set()
-                                except Exception as e:
-                                    logging.error(f"Callback error on line {line_idx}: {e}")
+                           else:
+                               line_arr = arr.ravel().astype(float)
 
-                            # if self._stop_event.is_set():
-                            #       logger.info("Scan stopped by user request")
-                            #       break
 
-                        except Exception as e:
-                            logger.error(f"Processing error on line {line_idx}: {e}")
-                            self._stop_event.set()
-                            self._error_occurred  = True
-                            break
-                          # Darle tiempo a otros threads
-                    # Read and discard flyback samples at end of frame
-                    print("Volviendo al origen")
-                    if flyback_samples > 0:
-                        try:
-                            ci_task.read(
-                                number_of_samples_per_channel=flyback_samples
-                            )
-                        except Exception as e:
-                            logger.warning(f"Flyback read skipped: {e}")
-                            self._error_occurred = True
-                # Aca termino un frame y su flyback
-                    frame_count += 1
-                    logger.info(f"Completed frame {frame_count}")
-                # End of NI-DAQ task
-            # End of frame processing
-        except Exception as e:
-            logger.error(f"Critical scan error: {e}", exc_info=True)
-            self._error_occurred = True
-            self._stop_event.set()
+                       # Now apply pixel filter (expects 1D line of length puntos_por_linea)
+                       try:
+                           current_line = px_filter(line_arr)
+                       except Exception as e:
+                           logger.error(f"Error filtering AI line {line_idx}: {e}")
+                           self._stop_event.set()
+                           break
+
+                       last_line = (line_idx == self.n_lines - 1)
+
+                       # Send voltages to callbacks (same API as counts)
+                       for callback in self._line_callbacks:
+                           try:
+                               if callback(current_line, line_idx, last_line):
+                                   self._stop_event.set()
+                           except Exception as e:
+                               logging.error(f"Callback error on AI line {line_idx}: {e}")
+
+                   # discard flyback samples if any
+                   if flyback_samples > 0:
+                       try:
+                           ai_task.read(number_of_samples_per_channel=flyback_samples)
+                       except Exception as e:
+                           logger.warning(f"AI flyback read skipped: {e}")
+                           self._error_occurred = True
+              
+
+        else:
             
+            try:
+                frame_count = 0
+                marker_signal = np.zeros(self.frames_samples , dtype=bool)
+                for start, end in self.line_indices:
+                    marker_signal[start] = True
+                    marker_signal[end - 1] = True
+    
+               
+                with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task, nidaqmx.Task() as do_task:
+                    xy_signal = np.vstack((self.volt_slow, self.volt_fast))
+                    # Configure analog
+                    self.channel_configuration_no_pulse(
+                        daq_acq_modes[1], ao_task, ci_task, xy_signal,
+                        self.frames_samples + flyback_samples, slow_chan, fast_chan
+                        )
+                    self.configure_marker_task(
+                            do_task,
+                            marker_signal,
+                            daq_acq_modes[1],
+                            self.frames_samples
+                        )
+                    # Arrancar los tasks de esta forma no debe sincronizarlos
+                    # Hacer algo parecido a esto
+                    # https://github.com/ni/nidaqmx-python/issues/162
+                    do_task.start()
+                    ci_task.start()
+                    ao_task.start()
+                    while not self._stop_event.is_set():
+                        # Process line by line
+                        logger.info("Arrancando scan")
+                        for line_idx, (start, end) in enumerate(self.line_indices):
+                            # Read line data
+                            try:
+                                line_total_data = ci_task.read(
+                                    number_of_samples_per_channel=self.samples_per_line
+                                )
+                            except Exception as e:  # nidaqmx.errors.DaqError
+                                logger.error(f"DAQ read error on line {line_idx}: {e}")
+                                self._stop_event.set()
+                                break
+                            # print(sum(line_total_data))
+                            try:
+                               
+                                current_line = px_filter(line_total_data)
+    
+                                last_line = (line_idx == self.n_lines - 1)
+    
+                                # Send to callbacks
+                                for callback in self._line_callbacks:
+                                    try:
+                                        if callback(current_line, line_idx, last_line):
+                                            self._stop_event.set()
+                                    except Exception as e:
+                                        logging.error(f"Callback error on line {line_idx}: {e}")
+    
+                                # if self._stop_event.is_set():
+                                #       logger.info("Scan stopped by user request")
+                                #       break
+    
+                            except Exception as e:
+                                logger.error(f"Processing error on line {line_idx}: {e}")
+                                self._stop_event.set()
+                                self._error_occurred  = True
+                                break
+                              # Darle tiempo a otros threads
+                        # Read and discard flyback samples at end of frame
+                        print("Volviendo al origen")
+                        if flyback_samples > 0:
+                            try:
+                                ci_task.read(
+                                    number_of_samples_per_channel=flyback_samples
+                                )
+                            except Exception as e:
+                                logger.warning(f"Flyback read skipped: {e}")
+                                self._error_occurred = True
+                    # Aca termino un frame y su flyback
+                        frame_count += 1
+                        logger.info(f"Completed frame {frame_count}")
+                    # End of NI-DAQ task
+                # End of frame processing
+            except Exception as e:
+                logger.error(f"Critical scan error: {e}", exc_info=True)
+                self._error_occurred = True
+                self._stop_event.set()
+                
             
     
         try:
@@ -536,7 +652,6 @@ class _NIDAQScanThread(threading.Thread):
                         daq_acq_modes[0], ao_task, ci_task, xy_back_signal,
                         n_reloc_samples, slow_chan, fast_chan
                         )
-                    do_task.start()
                     ci_task.start()
                     ao_task.start()
                     # ao_task.write(xy_signal, auto_start=True)
@@ -595,32 +710,43 @@ class NIDAQScan(BaseScan):
             raise AttributeError("scan_params not set")
         return self.scan_params.line_length_slow
 
-    def start_scan(self,
-                   params: scan_parameters.RegionScanParameters,
-                   scan_mode_name: str,
-                   ):
-        """Start a new scan with given parameters."""
+    def start_scan(self, params: scan_parameters.RegionScanParameters,
+               scan_mode_name: str,
+               detector_name: str = None):
+
         if self._scanning:
-            logger.warning(
-                "Nuevo scan iniciado mientras el anterior estaba en marcha"
-                )
+            logger.warning("Nuevo scan iniciado mientras el anterior estaba en marcha")
             return False
+    
         scan_mode = _SCAN_MODES.get(scan_mode_name, None)
         if not scan_mode:
-            logger.warning(
-                "Modo de escaneo no reconocido: %s", scan_mode_name
-                )
+            logger.warning("Modo de escaneo no reconocido: %s", scan_mode_name)
             return False
+    
         self.scan_params = dataclasses.replace(params)
         self.scan_mode = scan_mode
+    
+        # save detector selection for thread/run()
+        # keep a normalized attribute on the instance for other code to read
+        self.detector = (detector_name or "").upper() if detector_name else None
+    
+        if detector_name:
+            mapb = {"APD1": "ctr0", "APD2": "ctr1", "PMT": None}
+            # update config.ci_channel only if mapping specifies one
+            if mapb.get(detector_name) is not None:
+                self.config.ci_channel = mapb.get(detector_name)
+            # for PMT, set AI input channel in config
+            if detector_name.upper() == "PMT":
+                setattr(self.config, "ai_channel", f"{self.config.device_name}/ai2")
+    
         if not self._validate_scan_params(params):
             raise ValueError("Invalid scan parameters")
-
+    
         self._scanning = True
-
         self._execute_scan_start_callbacks()
         self._thread = self._create_scan_thread()
         self._thread.start()
+
 
     def _validate_scan_params(self, params: scan_parameters.RegionScanParameters) -> bool:
         valid = True
@@ -958,15 +1084,16 @@ class NIDAQScan(BaseScan):
             slow_back_v=slow_back_v,
             samples_per_line=samples_per_line,
             total_samples=total_samples,
-            line_indices=line_indices,
             total_center_samples=total_center_samples,
-            total_back_samples=total_back_samples,
+            total_back_samples=total_back_samples,  
+            line_indices=line_indices,
             true_px=true_px,
             n_px_acc=n_px_acc,
             n_lines=n_lines,
             acc=acc,
             config=thread_config,
             scan_end_callbacks=self._stop_callbacks,
+            detector=self.detector,
         )
         print(f"{n_px_acc=}")
 
