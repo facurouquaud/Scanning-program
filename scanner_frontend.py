@@ -46,6 +46,7 @@ from PyQt5.QtWidgets import (
     QAbstractButton,
     QComboBox,
 )
+from PyQt5.QtWidgets import QToolButton
 
 from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot, QPointF, QObject
 import PyQt5.QtGui as QtGui
@@ -168,14 +169,33 @@ class ScanImage(QObject):
         ii = pg.ImageItem()
         self._image_item = ii
         pi.addItem(ii)
+        
         self._guideline = pg.InfiniteLine(
             pos=0,
             angle=0,
             movable=False,
             pen={"color": "r", "width": 1},
         )
+        #self._guideline.hide()
+        #pi.addItem(self._guideline)
+        
+        self._image_item = ii
+        pi.addItem(self._image_item)
+        
+        # GUIDELINE: crear siempre y añadir al plot
+        self._guideline = pg.InfiniteLine(pos=0, angle=0, movable=False, pen={"color": "r", "width": 1})
         self._guideline.hide()
         pi.addItem(self._guideline)
+        
+        # PIN: marcador persistente (oculto por defecto)
+        self._pin = pg.ScatterPlotItem(size=10, brush=pg.mkBrush('y'), pen=pg.mkPen('k'))
+        self._pin.setZValue(20)
+        pi.addItem(self._pin)
+        self._pin.hide()
+        
+        # Pin placement control
+        self._pin_placement_enabled = False
+        self._pin_place_callback = None
         self.ROI = BoundedROI(
             (
                 0,
@@ -265,6 +285,54 @@ class ScanImage(QObject):
         s = super()
         if hasattr(s, "__del__"):
             s.__del__(self)
+    # Métodos nuevos en ScanImage
+    def show_pin(self, center: tuple[float, float]):
+        x, y = center
+        self._pin.setData([x], [y])
+        self._pin.show()
+    
+    def hide_pin(self):
+        self._pin.hide()
+    
+    def move_pin(self, center: tuple[float, float]):
+        if getattr(self._pin, "isVisible", lambda: False)():
+            x, y = center
+            self._pin.setData([x], [y])
+    
+    def enable_pin_placement(self, callback):
+        """Enable clicking on this plot to place the pin. callback(center_tuple) called after placement."""
+        if self._pin_placement_enabled:
+            return
+        self._pin_place_callback = callback
+        self._pin_placement_enabled = True
+        self._plot_item.scene().sigMouseClicked.connect(self._handle_pin_click)
+    
+    def disable_pin_placement(self):
+        if not self._pin_placement_enabled:
+            return
+        try:
+            self._plot_item.scene().sigMouseClicked.disconnect(self._handle_pin_click)
+        except Exception:
+            pass
+        self._pin_placement_enabled = False
+        self._pin_place_callback = None
+    
+    def _handle_pin_click(self, ev):
+        if not self._pin_placement_enabled:
+            return
+        pos = ev.scenePos()
+        if not self._plot_item.sceneBoundingRect().contains(pos):
+            return
+        view_pos = self._plot_item.vb.mapSceneToView(pos)
+        x, y = view_pos.x(), view_pos.y()
+        self._pin.setData([x], [y])
+        self._pin.show()
+        if callable(self._pin_place_callback):
+            try:
+                self._pin_place_callback((x, y))
+            except Exception:
+                pass
+    
 
 
 #  Frontend Interface
@@ -493,6 +561,15 @@ class FrontEnd(QMainWindow):
         # self._cross.hide()
         self._create_scan_images()
         self.update_roi(self._scan_params.center, self._scan_params.line_length_fast)
+        # en create_dock_widgets(), en la sección de botones donde están roi_button etc.
+        self.pin_button = QToolButton()
+        self.pin_button.setText("Pin")
+        self.pin_button.setCheckable(True)
+        self.pin_button.setToolTip("Toggle pin placement (click on image to set pin)")
+        self.pin_button.setFixedSize(36, 24)
+        buttons_layout.addWidget(self.pin_button)
+        self.pin_button.clicked.connect(self._on_pin_toggled)
+
 
         # # Create histogram for color scaling
         # self.histogram = pg.HistogramLUTItem()
@@ -1436,6 +1513,39 @@ class FrontEnd(QMainWindow):
         # self.close_files()
         self._map_window.close()
         super().closeEvent(event)
+    # método nuevo en FrontEnd
+    def _on_pin_toggled(self, checked: bool):
+        # Usamos la primera ScanImage como receptor del click; al colocar replicamos a todas.
+        if not self._scan_images:
+            return
+        primary = self._scan_images[0]
+    
+        if checked:
+            def placed_callback(center):
+                # replicar pin en todas las vistas
+                for si in self._scan_images:
+                    try:
+                        si.show_pin(center)
+                    except Exception:
+                        pass
+                # opcional: mantener el botón activado para permitir reubicar múltiples veces
+                # Si querés placement único, descomentar las siguientes líneas:
+                # self.pin_button.setChecked(False)
+                # primary.disable_pin_placement()
+    
+            primary.enable_pin_placement(placed_callback)
+        else:
+            try:
+                primary.disable_pin_placement()
+            except Exception:
+                pass
+            # Si querés que al desactivar el botón el pin desaparezca:
+            for si in self._scan_images:
+                try:
+                    si.hide_pin()
+                except Exception:
+                    pass
+
     
 
 
