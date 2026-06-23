@@ -422,6 +422,7 @@ class FrontEnd(QMainWindow):
         self.update_parameters()
         self.create_positioner_dock()
         self.create_file_dock()
+        
         # Dock widget for controls and plot
         self.controls_plot_dock = QDockWidget("2D Scan", self)
         self.controls_plot_dock.setFeatures(
@@ -786,6 +787,79 @@ class FrontEnd(QMainWindow):
         self.choose_center_button.clicked.connect(self.choose_center)
 
         self.move_to_button.clicked.connect(self.move_to_position)
+    def save_last_scan(self):
+        if getattr(self, "last_frame", None) is None:
+              QMessageBox.information(self, "No data", "No last frame available to save.")
+              return
+        
+       # Sync filename UI
+        self._publish_filename()
+        default_dir = pathlib.Path(self._dir_le.text()) if getattr(self, "_dir_le", None) else pathlib.Path(self._fname_s.get_base_dir())
+        default_name = str(self._fname_le.text() if getattr(self, "_fname_le", None) else self._fname_s.get_base_name())
+        default_path = default_dir / f"{default_name}_last.npy"
+        
+        # Let user choose filename (supports .npy and .png)
+        filt = "NumPy files (*.npy);;PNG images (*.png);;All files (*)"
+        chosen, selected_filter = QFileDialog.getSaveFileName(self, "Save last scan as...", str(default_path), filt)
+        if not chosen:
+            QMessageBox.information(self, "Save cancelled", "No file selected.")
+            return
+        
+        chosen_path = pathlib.Path(chosen)
+        # Ensure directory exists
+        try:
+            chosen_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            QMessageBox.critical(self, "Save error", f"Could not create directory: {e}")
+            return
+        
+        # Save params JSON next to chosen file (if available)
+        try:
+            if getattr(self, "_scan_params", None) is not None:
+                params_path = chosen_path.with_name(chosen_path.stem + "_params.json")
+                self._scan_params.save_to(str(params_path))
+        except Exception as e:
+            QMessageBox.warning(self, "Params save error", f"Could not save params: {e}")
+        
+        # Save data: prefer full imagen if present, else last_frame
+        try:
+            if chosen_path.suffix.lower() == ".npy":
+                if getattr(self, "imagen", None) is not None and getattr(self, "imagen").size:
+                    np.save(str(chosen_path), self.imagen)
+                else:
+                    np.save(str(chosen_path), self.last_frame)
+            elif chosen_path.suffix.lower() == ".png":
+                # Convert to uint8 image before saving
+                from PIL import Image
+                frame = self.last_frame if (getattr(self, "imagen", None) is None or not getattr(self, "imagen").size) else self.imagen[0]
+                # normalize to 0-255
+                fmin, fmax = frame.min(), frame.max()
+                if fmax > fmin:
+                    norm = (frame - fmin) / (fmax - fmin)
+                else:
+                    norm = frame - fmin
+                img_arr = (255 * norm).astype("uint8")
+                Image.fromarray(img_arr).save(str(chosen_path))
+            else:
+                # fallback: save as .npy
+                if getattr(self, "imagen", None) is not None and getattr(self, "imagen").size:
+                    np.save(str(chosen_path.with_suffix(".npy")), self.imagen)
+                else:
+                    np.save(str(chosen_path.with_suffix(".npy")), self.last_frame)
+        except Exception as e:
+            QMessageBox.critical(self, "Save error", f"Error saving data: {e}")
+            return
+        
+        # Increment suffix in UI if present
+        try:
+            if getattr(self, "_sufix_le", None) and self._sufix_le.text().strip():
+                self._sufix_le.setText(_str_incr(self._sufix_le.text()))
+        except Exception:
+            pass
+        
+        QMessageBox.information(self, "Saved", f"Last frame saved to {chosen_path}")
+
+
 
     def create_file_dock(self):
         """Creates dockable window for saving data."""
@@ -832,6 +906,9 @@ class FrontEnd(QMainWindow):
         layout.addStretch(1)
         # Connect buttons to functions
         # self.single_scan_button.clicked.connect(self.single_scan)
+        self._save_last_btn = QPushButton("Save last")
+        save_layout.addWidget(self._save_last_btn)
+        self._save_last_btn.clicked.connect(self.save_last_scan)
         self._choose_dir_btn.clicked.connect(self._choose_dir)
         self._filesave_dock = dock
 
@@ -1359,6 +1436,7 @@ class FrontEnd(QMainWindow):
         # self.close_files()
         self._map_window.close()
         super().closeEvent(event)
+    
 
 
 if __name__ == "__main__":
