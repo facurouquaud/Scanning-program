@@ -188,7 +188,7 @@ class ScanImage(QObject):
         pi.addItem(self._guideline)
         
         # PIN: marcador persistente (oculto por defecto)
-        self._pin = pg.ScatterPlotItem(size=10, brush=pg.mkBrush('y'), pen=pg.mkPen('k'))
+        self._pin = pg.ScatterPlotItem(size=20, brush=pg.mkBrush('gray'), pen=pg.mkPen('white'), symbol='x')
         self._pin.setZValue(20)
         pi.addItem(self._pin)
         self._pin.hide()
