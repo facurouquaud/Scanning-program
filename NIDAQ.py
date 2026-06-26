@@ -21,7 +21,7 @@ import time
 import copy
 from enum import Enum as _Enum
 # from Shutters_backend import NIDAQShuttersBackend
-from drivers.trajectories import generate_trajectory, scanning_2D  # , finish_scan
+from drivers.trajectories import generate_trajectory, scanning_2D, line_scan # , finish_scan
 from base_scan import (BaseScan, ScanCallback, StartCallback, StopCallback,
                        ScanModeInfo)
 import math
@@ -543,9 +543,26 @@ class _NIDAQScanThread(threading.Thread):
             try:
                 frame_count = 0
                 marker_signal = np.zeros(self.frames_samples , dtype=bool)
+                samples_forward = self.true_px + 2*self.n_px_acc
+                marker_signal = np.zeros(self.frames_samples, dtype=bool)
+           
                 for start, end in self.line_indices:
-                    marker_signal[start] = True
-                    marker_signal[end - 1] = True
+                   # índice de fin de la IDA dentro del bloque
+                   end_ida = start + samples_forward   # primer sample DESPUÉS de la ida
+               
+                   # 1er marker: inicio de IDA (pulso de 1 sample)
+                   marker_signal[start] = True
+                   marker_signal[end - 1] = True
+    
+                   # opcional pero recomendable para claridad:
+                   if start + 1 < self.frames_samples:
+                       marker_signal[start + 1] = False
+               
+                   # 2º marker: fin de IDA (pulso de 1 sample)
+                   if end_ida < self.frames_samples:
+                       marker_signal[end_ida] = True
+                       if end_ida + 1 < self.frames_samples:
+                           marker_signal[end_ida + 1] = False
     
                
                 with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task, nidaqmx.Task() as do_task:
@@ -637,13 +654,14 @@ class _NIDAQScanThread(threading.Thread):
                     # last_position = last_position_v /(1E6*0.04)
                     last_position = [
                     last_position_v[0] / (1E6 * 0.04),  # fast channel
-                    last_position_v[1] / (1E6 * 0.04)   # slow channel
+                    last_position_v[1] / (1E6 * 0.04)   # slow channel    
                ]
-                         
-                _, self.fast_back_v, self.slow_back_v, n_rel  = generate_trajectory(
-            last_position, 0, 0, self.scan_params.dwell_time*1E-6, a_max_fast=self.acc, a_max_slow=self.acc
+                fast_f = self.fast_back_v[-1] 
+                slow_f = self.slow_back_v[-1]
+                _, self.fast_back_V, self.slow_back_V, n_rel  = generate_trajectory(
+            last_position, fast_f, slow_f, self.scan_params.dwell_time*1E-6, a_max_fast=self.acc, a_max_slow=self.acc
                 )
-                xy_back_signal = np.vstack((self.slow_back_v, self.fast_back_v))
+                xy_back_signal = np.vstack((self.slow_back_V, self.fast_back_V))
                 xy_back_signal *= (1E6*0.04)
                 n_reloc_samples = len(self.fast_back_v)
                 print(f"la vuelta tiene {n_reloc_samples}")
@@ -684,6 +702,7 @@ class NIDAQScan(BaseScan):
         self.scan_params: Optional[scan_parameters.RegionScanParameters] = None
         self._scanning = False
         self.current_position = np.array([0.0, 0.0])
+        self.z_offset_v = 5.0
 
     def register_callbacks(self,
                            scan_start_callback: Optional[StartCallback] = None,
@@ -1027,7 +1046,14 @@ class NIDAQScan(BaseScan):
 
         fast_back_v = back_fast_m_shifted * fast_chan_convertion*volt
         slow_back_v = back_slow_m_shifted * slow_chan_convertion*volt
-
+        if self.scan_params.scan_type in (scan_parameters.RegionScanType.XZ,
+                                  scan_parameters.RegionScanType.YZ):
+                # sumar offset en V
+                volt_slow   = volt_slow + self.z_offset_v
+                slow_rel_v  = slow_rel_v + self.z_offset_v
+                slow_back_v = slow_back_v + self.z_offset_v
+        
+      
         # Clipping (chequeamos que no superen valores de voltajes)
         volt_fast = np.clip(volt_fast, -self.config.max_voltage, self.config.max_voltage)
         volt_slow = np.clip(volt_slow, -self.config.max_voltage, self.config.max_voltage)
@@ -1115,3 +1141,133 @@ class NIDAQScan(BaseScan):
 
     def get_scan_modes(self) -> list[ScanModeInfo]:
         return [modo for modo  in ScanModes]
+    def set_z_midpoint(self,
+                   midpoint_voltage: float | None = None,
+                   z_ao_channel: str = "Dev1/ao2"):
+        """
+        Smoothly move Z axis to midpoint_voltage using generate_trajectory.
+        Sends only the slow (Z) AO waveform to z_ao_channel.
+        """
+        midpoint_voltage = midpoint_voltage if midpoint_voltage is not None else self.z_offset_voltage
+    
+        # ensure full channel name
+        #full_z_chan = z_ao_channel if "/" in z_ao_channel else f"{self.config.device_name}/{z_ao_channel}"
+    
+        # conversion factor (V per µm) - prefer NANO for Z if present
+        try:
+            conv = self.config.um_to_volts_NANO
+        except Exception:
+            conv = float(self.config.um_to_volts_DAQ)
+    
+        # target slow in µm (V -> µm)
+        
+        target_slow_um = 10
+    
+        # current position in µm (fallback to 0)
+       
+        fast_current_um, slow_current_um = 0.0, 0.0
+    
+        # dwell in µs and safe accelerations (µm/µs^2)
+        dwell_us = 1000
+        a_fast = 130
+        a_slow = a_fast
+    
+        # generate smooth trajectory (arrays in µm, t in µs)
+        t_arr, fast_arr_um, slow_arr_um, n_pts = generate_trajectory(
+            (fast_current_um, slow_current_um),
+            fast_f=fast_current_um,
+            slow_f=target_slow_um,
+            dwell_time=dwell_us*1E-5,
+            a_max_fast=a_fast,
+            a_max_slow=a_slow,
+        )
+    
+        # convert slow axis to volts (V)
+        volt_slow = slow_arr_um * conv
+    
+        # clip to safe range
+        vmax = float(getattr(self.config, "max_voltage", 10.0))
+        volt_slow = np.clip(volt_slow, -vmax, vmax)
+        # plt.scatter(t_arr,volt_slow, color = "gray")
+        # plt.xlabel("Tiempo[s]")
+        # plt.ylabel("Voltaje [V]")
+        # plt.grid()
+        
+    
+        # write ONLY slow channel waveform
+        try:
+            with nidaqmx.Task() as ao_task:
+                ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao2")  # slow
+                # configure timing if needed (optional): ao_task.timing.cfg_samp_clk_timing(...)
+                ao_task.write(volt_slow.tolist(), auto_start=True)
+        except Exception as e:
+            logger.error("Error performing smooth Z midpoint move: %s", e)
+            raise
+    
+    def z_to_zero(self,
+                   midpoint_voltage: float | None = None,
+                   z_ao_channel: str = "Dev1/ao2"):
+        """
+        Smoothly move Z axis to midpoint_voltage using generate_trajectory.
+        Sends only the slow (Z) AO waveform to z_ao_channel.
+        """
+        midpoint_voltage = midpoint_voltage if midpoint_voltage is not None else self.z_offset_voltage
+    
+        # ensure full channel name
+        #full_z_chan = z_ao_channel if "/" in z_ao_channel else f"{self.config.device_name}/{z_ao_channel}"
+    
+        # conversion factor (V per µm) - prefer NANO for Z if present
+        try:
+            conv = self.config.um_to_volts_NANO
+        except Exception:
+            conv = float(self.config.um_to_volts_DAQ)
+    
+        # target slow in µm (V -> µm)
+        
+       
+    
+        # current position in µm (fallback to 0)
+       
+        fast_current_um, slow_current_um = 0.0, 10
+    
+        # dwell in µs and safe accelerations (µm/µs^2)
+        dwell_us = 1000
+        a_fast = 130
+        a_slow = a_fast
+    
+        # generate smooth trajectory (arrays in µm, t in µs)
+        t_arr, fast_arr_um, slow_arr_um, n_pts = generate_trajectory(
+            (fast_current_um, slow_current_um),
+            fast_f=fast_current_um,
+            slow_f=0,
+            dwell_time=dwell_us*1E-5,
+            a_max_fast=a_fast,
+            a_max_slow=a_slow,
+        )
+    
+        # convert slow axis to volts (V)
+        volt_slow = slow_arr_um * conv
+    
+        # clip to safe range
+        vmax = float(getattr(self.config, "max_voltage", 10.0))
+        volt_slow_zero = np.clip(volt_slow, -vmax, vmax)
+        # plt.scatter(t_arr,volt_slow_zero, color = "gray")
+        # plt.xlabel("Tiempo[s]")
+        # plt.ylabel("Voltaje [V]")
+        # plt.grid()
+        
+    
+        # write ONLY slow channel waveform
+        try:
+            with nidaqmx.Task() as ao_task:
+                ao_task.ao_channels.add_ao_voltage_chan("Dev1/ao2")  # slow
+                # configure timing if needed (optional): ao_task.timing.cfg_samp_clk_timing(...)
+                ao_task.write(volt_slow.tolist(), auto_start=True)
+        except Exception as e:
+            logger.error("Error performing smooth Z midpoint move: %s", e)
+            raise
+    
+        
+     
+
+

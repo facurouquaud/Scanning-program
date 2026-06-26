@@ -425,6 +425,13 @@ class FrontEnd(QMainWindow):
 
         self._map_window = MapWindow((0, 20, 0, 20), 0.02, parent=self)
         self._map_window.show()
+        # intentar fijar Z al arrancar la app (canal por defecto "Dev1/ao2")
+        try:
+            if hasattr(self.scanner, "set_z_midpoint"):
+                self.scanner.set_z_midpoint("Dev1/ao2")
+        except Exception as e:
+            logger.error("No se pudo fijar Z al midpoint en el arranque: %s", e)
+
     def _load_scan_templates(self):
         try:
             p = self._templates_file
@@ -1512,6 +1519,11 @@ class FrontEnd(QMainWindow):
             self.scanner.stop_scan()
         # self.close_files()
         self._map_window.close()
+        try:
+                self.scanner.z_to_zero("Dev1/ao2")
+        except Exception as e:
+            logger.error("No se pudo llevar z a cero: %s", e)
+
         super().closeEvent(event)
     # método nuevo en FrontEnd
     def _on_pin_toggled(self, checked: bool):
