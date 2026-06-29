@@ -402,6 +402,8 @@ class _NIDAQScanThread(threading.Thread):
         print("Yendo al origen")
         slow_0 = self.slow_rel[-1]/(1E6*0.04)  #unidades que toma generate (metros)
         fast_0 = self.fast_rel[-1]/(1E6*0.04)
+        # slow_0 = self.volt_slow[-1]/(1E6*0.04)  #unidades que toma generate (metros)
+        # fast_0 = self.volt_fast[-1]/(1E6*0.04)
         print(fast_0)
         print(slow_0)
         try:
@@ -418,16 +420,17 @@ class _NIDAQScanThread(threading.Thread):
                 last_position_v[1] / (1E6 * 0.04)   # slow channel
            ]
                     #last_position = [0,0]
-            t, self.fast_init_frame, self.slow_init_frame, n_init = generate_trajectory(
+            t_init, self.fast_init_frame, self.slow_init_frame, n_init = generate_trajectory(
                 last_position, fast_0, slow_0, self.scan_params.dwell_time*1E-6,
                 a_max_fast=self.acc, a_max_slow=self.acc
             )
             xy_init_signal = np.vstack((self.slow_init_frame , self.fast_init_frame))
             xy_init_signal *= (1E6*0.04)
-            print(xy_init_signal)
-         
+            print(xy_init_signal)         
             n_init_samples = len(self.fast_init_frame)
             print(f"la ida tiene {n_init}")
+            print(self.fast_init_frame*(1E6*0.04))
+            print(self.slow_init_frame*(1E6*0.04))
 
             with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
                 self.channel_configuration_no_pulse(
@@ -658,13 +661,16 @@ class _NIDAQScanThread(threading.Thread):
                ]
                 fast_f = self.fast_back_v[-1] 
                 slow_f = self.slow_back_v[-1]
-                _, self.fast_back_V, self.slow_back_V, n_rel  = generate_trajectory(
-            last_position, fast_f, slow_f, self.scan_params.dwell_time*1E-6, a_max_fast=self.acc, a_max_slow=self.acc
+                t_back, self.fast_back_V, self.slow_back_V, n_rel  = generate_trajectory(
+            last_position, 0, 0, self.scan_params.dwell_time*1E-6, a_max_fast=self.acc, a_max_slow=self.acc
                 )
                 xy_back_signal = np.vstack((self.slow_back_V, self.fast_back_V))
                 xy_back_signal *= (1E6*0.04)
-                n_reloc_samples = len(self.fast_back_v)
-                print(f"la vuelta tiene {n_reloc_samples}")
+                n_reloc_samples = len(self.fast_back_V)
+                print(f"la vuelta tiene {n_rel}")
+                print(self.fast_back_V*(1E6*0.04))
+                print(self.slow_back_V*(1E6*0.04))
+
                 with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
                     self.channel_configuration_no_pulse(
                         daq_acq_modes[0], ao_task, ci_task, xy_back_signal,
@@ -682,6 +688,9 @@ class _NIDAQScanThread(threading.Thread):
                     # return
         logger.info("Scan completed successfully")
         self._execute_scan_stop_callbacks()
+
+    
+   
 
 
     def stop(self):
@@ -1046,12 +1055,22 @@ class NIDAQScan(BaseScan):
 
         fast_back_v = back_fast_m_shifted * fast_chan_convertion*volt
         slow_back_v = back_slow_m_shifted * slow_chan_convertion*volt
-        if self.scan_params.scan_type in (scan_parameters.RegionScanType.XZ,
-                                  scan_parameters.RegionScanType.YZ):
-                # sumar offset en V
-                volt_slow   = volt_slow + self.z_offset_v
-                slow_rel_v  = slow_rel_v + self.z_offset_v
-                slow_back_v = slow_back_v + self.z_offset_v
+        z_offset_v = float(getattr(self, "z_offset_voltage", 5.0))
+        vmax = float(self.config.max_voltage)
+
+        # aplicar offset (ya estás haciendo esto)
+        # volt_slow   = volt_slow + z_offset_v
+        # slow_rel_v  = slow_rel_v + z_offset_v
+        # slow_back_v = slow_back_v + z_offset_v
+        
+        # log y clip
+        logger.debug("slow volts before clip: min=%s max=%s", np.min(volt_slow), np.max(volt_slow))
+        if np.any(np.abs(volt_slow) > vmax):
+            logger.warning("Some slow voltages exceed vmax; clipping applied")
+        volt_slow   = np.clip(volt_slow,   -vmax, vmax)
+        slow_rel_v  = np.clip(slow_rel_v,  -vmax, vmax)
+        slow_back_v = np.clip(slow_back_v, -vmax, vmax)
+
         
       
         # Clipping (chequeamos que no superen valores de voltajes)
@@ -1080,23 +1099,23 @@ class NIDAQScan(BaseScan):
         line_indices = [(i * samples_per_line, (i + 1) * samples_per_line) for i in range(n_lines)]
 
         # Esta parte grafica los voltajes generados. Mantener comentado a la hora de escanear.
-        def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
-            fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
-            ax1.scatter(t, x,s = 8, color ="black")
-            ax1.set_ylabel("Posición X [V]")
-            ax1.set_title(titulo)
-            ax1.grid(True)
-            ax2.scatter(t, y,s = 8, color="black")
-            ax2.set_ylabel("Posición Y [V]")
-            ax2.set_xlabel("Tiempo [us]")
-            ax2.grid(True)
-            plt.tight_layout()
-            plt.show()
-        if len(t_rel) > 1:
-              muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
-        muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
-        if len(t_back) > 1:
-                  muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
+        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
+        #     ax1.scatter(t, x,s = 8, color ="black")
+        #     ax1.set_ylabel("Posición X [V]")
+        #     ax1.set_title(titulo)
+        #     ax1.grid(True)
+        #     ax2.scatter(t, y,s = 8, color="black")
+        #     ax2.set_ylabel("Posición Y [V]")
+        #     ax2.set_xlabel("Tiempo [us]")
+        #     ax2.grid(True)
+        #     plt.tight_layout()
+        #     plt.show()
+        # if len(t_rel) > 1:
+        #       muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
+        # muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
+        # if len(t_back) > 1:
+        #           muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
 
         # devolver/crear thread pasando solo señales slowa procesadas:
         return _NIDAQScanThread(
