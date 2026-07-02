@@ -661,11 +661,14 @@ class _NIDAQScanThread(threading.Thread):
                ]
                 fast_f = self.fast_back_v[-1] 
                 slow_f = self.slow_back_v[-1]
+                #slow_f = 0
+                print(fast_f,slow_f)
                 t_back, self.fast_back_V, self.slow_back_V, n_rel  = generate_trajectory(
             last_position, 0, 0, self.scan_params.dwell_time*1E-6, a_max_fast=self.acc, a_max_slow=self.acc
                 )
                 xy_back_signal = np.vstack((self.slow_back_V, self.fast_back_V))
                 xy_back_signal *= (1E6*0.04)
+                print(xy_back_signal)
                 n_reloc_samples = len(self.fast_back_V)
                 print(f"la vuelta tiene {n_rel}")
                 print(self.fast_back_V*(1E6*0.04))
