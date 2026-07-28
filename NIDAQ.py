@@ -372,103 +372,116 @@ class _NIDAQScanThread(threading.Thread):
                 logger.error(f"Stop callback error: {e}")
 
     def run(self):
-        daq_acq_modes = [AcquisitionType.FINITE, AcquisitionType.CONTINUOUS]
-        # FIXME:  ¿Esto no venía en config?
-        chann_asign = {
-            scan_parameters.RegionScanType.XY: {"fast": "Dev1/ao0", "slow": "Dev1/ao1"},
-            scan_parameters.RegionScanType.XZ: {"fast": "Dev1/ao0", "slow": "Dev1/ao2"},
-            scan_parameters.RegionScanType.YZ: {"fast": "Dev1/ao1", "slow": "Dev1/ao2"},
-            }
-        fast_chan = chann_asign[self.scan_params.scan_type]["fast"]
-        slow_chan = chann_asign[self.scan_params.scan_type]["slow"]
+       daq_acq_modes = [AcquisitionType.FINITE, AcquisitionType.CONTINUOUS]
+       # FIXME:  ¿Esto no venía en config?
+       chann_asign = {
+           scan_parameters.RegionScanType.XY: {"fast": "Dev1/ao0", "slow": "Dev1/ao1"},
+           scan_parameters.RegionScanType.XZ: {"fast": "Dev1/ao0", "slow": "Dev1/ao2"},
+           scan_parameters.RegionScanType.YZ: {"fast": "Dev1/ao1", "slow": "Dev1/ao2"},
+           }
+       fast_chan = chann_asign[self.scan_params.scan_type]["fast"]
+       slow_chan = chann_asign[self.scan_params.scan_type]["slow"]
+       conv_fast = self.config.um_to_volts_DAQ
+       if self.scan_params.scan_type in (scan_parameters.RegionScanType.XZ, scan_parameters.RegionScanType.YZ):
+           conv_slow = self.config.um_to_volts_NANO
+       else:
+           conv_slow = self.config.um_to_volts_DAQ
 
-        # Select data based on scan mode
-        if self.config.scan_mode is ScanModes.FORWARD:
-            px_filter = make_pixel_filter_forward(self.true_px, self.n_px_acc)
-        elif self.config.scan_mode is ScanModes.BACKWARD:
-            px_filter = make_pixel_filter_backward(self.true_px, self.n_px_acc)
-        else:  # ScanModes.FULL_DATA
-            px_filter = make_pixel_filter_full(self.true_px, self.n_px_acc)
 
-        """Main scanning loop."""
-        # Precompute center and flyback samples as integers
-        flyback_samples = self.frames_samples - (self.n_lines * self.samples_per_line)
 
-        # Ensure flyback_samples is non-negative
-        flyback_samples = max(0, flyback_samples)
+       # Select data based on scan mode
+       if self.config.scan_mode is ScanModes.FORWARD:
+           px_filter = make_pixel_filter_forward(self.true_px, self.n_px_acc)
+       elif self.config.scan_mode is ScanModes.BACKWARD:
+           px_filter = make_pixel_filter_backward(self.true_px, self.n_px_acc)
+       else:  # ScanModes.FULL_DATA
+           px_filter = make_pixel_filter_full(self.true_px, self.n_px_acc)
 
-        # AO-only relocation - Mismo enfoque que el escaneo principal
-        # FIXME: ¿Para que usamos CI acá?
-        print("Yendo al origen")
-        slow_0 = self.slow_rel[-1]/(1E6*0.04)  #unidades que toma generate (metros)
-        fast_0 = self.fast_rel[-1]/(1E6*0.04)
-        # slow_0 = self.volt_slow[-1]/(1E6*0.04)  #unidades que toma generate (metros)
-        # fast_0 = self.volt_fast[-1]/(1E6*0.04)
-        print(fast_0)
-        print(slow_0)
-        try:
-            with nidaqmx.Task() as ai_task:  # vuelta a la posición de descanso
-                # FIXME: BUILD FROM SCAN DATA (ojo Z)
-                internal_read_channel_name_fast = "Dev1/_ao0_vs_aognd"
-                internal_read_channel_name_slow = "Dev1/_ao1_vs_aognd"
-                ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_fast)
-                ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_slow)
-                last_position_v = ai_task.read()
-                #last_position = last_position_v /(1E6*0.04)
-                last_position = [
-                last_position_v[0] / (1E6 * 0.04),  # fast channel
-                last_position_v[1] / (1E6 * 0.04)   # slow channel
-           ]
-                    #last_position = [0,0]
-            t_init, self.fast_init_frame, self.slow_init_frame, n_init = generate_trajectory(
-                last_position, fast_0, slow_0, self.scan_params.dwell_time*1E-6,
-                a_max_fast=self.acc, a_max_slow=self.acc
-            )
-            xy_init_signal = np.vstack((self.slow_init_frame , self.fast_init_frame))
-            xy_init_signal *= (1E6*0.04)
-            print(xy_init_signal)         
-            n_init_samples = len(self.fast_init_frame)
-            print(f"la ida tiene {n_init}")
-            print(self.fast_init_frame*(1E6*0.04))
-            print(self.slow_init_frame*(1E6*0.04))
+       """Main scanning loop."""
+       # Precompute center and flyback samples as integers
+       flyback_samples = self.frames_samples - (self.n_lines * self.samples_per_line)
 
-            with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
-                self.channel_configuration_no_pulse(
-                    daq_acq_modes[0], ao_task, ci_task, xy_init_signal,
-                    n_init_samples, slow_chan, fast_chan
-                    )
-                # Start tasks - CI first then AO
-                ci_task.start()
-                ao_task.start()
-                # ao_task.write(xy_signal, auto_start=True)
-                ci_task.read(
-                    number_of_samples_per_channel=n_init_samples)
-            logger.info("Relocación al cero completada correctamente.")
-            
-        except Exception as e:
-            logger.error(f"Error en relocación: {e}")
-            self._stop_event.set()
-            return
-        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
-        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
-        #     ax1.scatter(t, x,s = 8, color ="black")
-        #     ax1.set_ylabel("Posición X [V]")
-        #     ax1.set_title(titulo)
-        #     ax1.grid(True)
-        #     ax2.scatter(t, y,s = 8, color="black")
-        #     ax2.set_ylabel("Posición Y [V]")
-        #     ax2.set_xlabel("Tiempo [us]")
-        #     ax2.grid(True)
-        #     plt.tight_layout()
-        #     plt.show()
-        # muestra_escaneo("Voltajes de recentrado",t,self.fast_init_frame,self.slow_init_frame)
-        use_ai = (self.detector == "PMT") or (getattr(self, "ai_channel", None) is not None)
-        if use_ai:
-           # AI (PMT) path — read voltages
-           with nidaqmx.Task() as ao_task, nidaqmx.Task() as ai_task:
-               xy_signal = np.vstack((self.volt_slow, self.volt_fast))
-               # configure AO + AI, pass ai channel names from thread/config
-               self.channel_configuration_ai(
+       # Ensure flyback_samples is non-negative
+       flyback_samples = max(0, flyback_samples)
+
+       # AO-only relocation - Mismo enfoque que el escaneo principal
+       # FIXME: ¿Para que usamos CI acá?
+       print("Yendo al origen")
+       fast_conv_inv = 1.0 / (1E6 * conv_fast)
+       slow_conv_inv = 1.0 / (1E6 * conv_slow)
+
+       fast_0 = self.fast_rel[-1] * fast_conv_inv
+       slow_0 = self.slow_rel[-1] * slow_conv_inv
+       print(fast_0)
+       print(slow_0)
+       try:
+           with nidaqmx.Task() as ai_task:  # vuelta a la posición de descanso
+               # build internal read channel list depending on scan axes
+               internal_read_channel_name_fast = "Dev1/_ao0_vs_aognd"
+               internal_read_channel_name_slow = "Dev1/_ao1_vs_aognd"
+               # si usamos ao2 para slow (XZ o YZ) añadimos su lectura interna también
+               internal_read_channel_name_ao2 = "Dev1/_ao2_vs_aognd"
+               ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_fast)
+               # preferir lectura de canal slow adecuado: si scan usa ao2 como slow, leer ao2
+               if self.scan_params.scan_type in (scan_parameters.RegionScanType.XZ, scan_parameters.RegionScanType.YZ):
+                   ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_ao2)
+                   last_position_v = ai_task.read()
+                   # last_position_v será [fast_volt, ao2_volt]
+                   last_position = [
+                       last_position_v[0] * fast_conv_inv,  # fast channel -> unidades generate espera (µm)
+                       last_position_v[1] * slow_conv_inv,  # slow channel (ao2) -> inversa conv
+                   ]
+               else:
+                   ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_slow)
+                   last_position_v = ai_task.read()
+                   last_position = [
+                       last_position_v[0] * fast_conv_inv,  # fast channel
+                       last_position_v[1] * slow_conv_inv,  # slow channel (ao1)
+                   ]
+                   #last_position = [0,0]
+           t_init, self.fast_init_frame, self.slow_init_frame, n_init = generate_trajectory(
+               last_position, fast_0, slow_0, self.scan_params.dwell_time * 1E-6,
+               a_max_fast=self.acc, a_max_slow=self.acc
+           )
+           # preparar señal AO: siempre apilar slow, fast (coincide con channel_configuration_* que añade slow primero)
+           # convertir posiciones a voltios usando los factores por canal y 1E6 (m->µm)
+           fast_init_v = self.fast_init_frame * conv_fast * 1E6
+           slow_init_v = self.slow_init_frame * conv_slow * 1E6
+           xy_init_signal = np.vstack((slow_init_v, fast_init_v))
+    
+           print(xy_init_signal)
+           n_init_samples = len(self.fast_init_frame)
+           print(f"la ida tiene {n_init}")
+           print(fast_init_v)
+           print(slow_init_v)
+    
+           with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
+               self.channel_configuration_no_pulse(
+                   daq_acq_modes[0], ao_task, ci_task, xy_init_signal,
+                   n_init_samples, slow_chan, fast_chan
+               )
+               # Start tasks - CI first then AO
+               ci_task.start()
+               ao_task.start()
+               ci_task.read(number_of_samples_per_channel=n_init_samples)
+           logger.info("Relocación al cero completada correctamente.")
+           
+       except Exception as e:
+           logger.error(f"Error en relocación: {e}")
+           self._stop_event.set()
+           return
+
+       use_ai = (self.detector == "PMT") or (getattr(self, "ai_channel", None) is not None)
+       if use_ai:
+          # AI (PMT) path — read voltages
+          with nidaqmx.Task() as ao_task, nidaqmx.Task() as ai_task:
+              if self.scan_params.scan_type in (scan_parameters.RegionScanType.XZ, scan_parameters.RegionScanType.YZ):
+                  slow_chan = "Dev1/ao2"
+              else:
+                  slow_chan = chann_asign[self.scan_params.scan_type]["slow"]
+              xy_signal = np.vstack((self.volt_slow, self.volt_fast))
+              # configure AO + AI, pass ai channel names from thread/config
+              self.channel_configuration_ai(
                    daq_acq_modes[1],
                    ao_task,
                    ai_task,
@@ -477,221 +490,233 @@ class _NIDAQScanThread(threading.Thread):
                    slow_chan,
                    fast_chan,
                    ai_channel=getattr(self, "ai_channel", None),
-                   
+               )
+              
+              # Start tasks in order (DO, AI, AO) so AI samples sync to AO clock
+              ai_task.start()
+              ao_task.start()
+
+              while not self._stop_event.is_set():
+                  logger.info("Arrancando scan (AI/PMT)")
+                  for line_idx, (start, end) in enumerate(self.line_indices):
+                      try:
+                          # Read voltages per sample for configured AI channels
+                          raw = ai_task.read(number_of_samples_per_channel=self.samples_per_line)
+                      except Exception as e:
+                          logger.error(f"AI read error on line {line_idx}: {e}")
+                          self._stop_event.set()
+                          break
+
+                      # Convert read result to 1D numpy voltages vector (choose first AI channel if multiple)
+                      arr = np.asarray(raw)
+                      # ai_task.read may return scalar, 1D or 2D depending on channels; flatten and pick channel 0 if needed
+                      if arr.ndim == 0:
+                          line_arr = np.atleast_1d(arr).astype(float)
+
+                      elif arr.ndim == 1:
+                          line_arr = arr.astype(float)
+
+                      else:
+                          # shape (n_channels, n_samples) or (n_samples, n_channels) — normalize to 1D samples for first channel
+                          # prefer (n_channels, n_samples)
+                          if arr.shape[0] >= 1 and arr.shape[1] == self.samples_per_line:
+                              line_arr = arr[0].astype(float)
+
+                          else:
+                              line_arr = arr.ravel().astype(float)
+
+
+                      # Now apply pixel filter (expects 1D line of length puntos_por_linea)
+                      try:
+                          current_line = px_filter(line_arr)
+                      except Exception as e:
+                          logger.error(f"Error filtering AI line {line_idx}: {e}")
+                          self._stop_event.set()
+                          break
+
+                      last_line = (line_idx == self.n_lines - 1)
+
+                      # Send voltages to callbacks (same API as counts)
+                      for callback in self._line_callbacks:
+                          try:
+                              if callback(current_line, line_idx, last_line):
+                                  self._stop_event.set()
+                          except Exception as e:
+                              logging.error(f"Callback error on AI line {line_idx}: {e}")
+
+                  # discard flyback samples if any
+                  if flyback_samples > 0:
+                      try:
+                          ai_task.read(number_of_samples_per_channel=flyback_samples)
+                      except Exception as e:
+                          logger.warning(f"AI flyback read skipped: {e}")
+                          self._error_occurred = True
+             
+
+       else:
+           
+           try:
+               frame_count = 0
+               marker_signal = np.zeros(self.frames_samples , dtype=bool)
+               samples_forward = self.true_px + 2*self.n_px_acc
+               marker_signal = np.zeros(self.frames_samples, dtype=bool)
+          
+               for start, end in self.line_indices:
+                  # índice de fin de la IDA dentro del bloque
+                  end_ida = start + samples_forward   # primer sample DESPUÉS de la ida
+              
+                  # 1er marker: inicio de IDA (pulso de 1 sample)
+                  marker_signal[start] = True
+                  marker_signal[end - 1] = True
+
+                  # opcional pero recomendable para claridad:
+                  if start + 1 < self.frames_samples:
+                      marker_signal[start + 1] = False
+              
+                  # 2º marker: fin de IDA (pulso de 1 sample)
+                  if end_ida < self.frames_samples:
+                      marker_signal[end_ida] = True
+                      if end_ida + 1 < self.frames_samples:
+                          marker_signal[end_ida + 1] = False
+
+              
+               with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task, nidaqmx.Task() as do_task:
+                   if self.scan_params.scan_type in (scan_parameters.RegionScanType.XZ, scan_parameters.RegionScanType.YZ):
+                       slow_chan = "Dev1/ao2"
+                   else:
+                       slow_chan = chann_asign[self.scan_params.scan_type]["slow"]
+                   xy_signal = np.vstack((self.volt_slow, self.volt_fast))
+                   # Configure analog
+                   self.channel_configuration_no_pulse(
+                       daq_acq_modes[1], ao_task, ci_task, xy_signal,
+                       self.frames_samples + flyback_samples, slow_chan, fast_chan
+                       )
+                   self.configure_marker_task(
+                           do_task,
+                           marker_signal,
+                           daq_acq_modes[1],
+                           self.frames_samples
+                       )
+
+                  
+                   # Arrancar los tasks de esta forma no debe sincronizarlos
+                   # Hacer algo parecido a esto
+                   # https://github.com/ni/nidaqmx-python/issues/162
+                   do_task.start()
+                   ci_task.start()
+                   ao_task.start()
+                   while not self._stop_event.is_set():
+                       # Process line by line
+                       logger.info("Arrancando scan")
+                       for line_idx, (start, end) in enumerate(self.line_indices):
+                           # Read line data
+                           try:
+                               line_total_data = ci_task.read(
+                                   number_of_samples_per_channel=self.samples_per_line
+                               )
+                           except Exception as e:  # nidaqmx.errors.DaqError
+                               logger.error(f"DAQ read error on line {line_idx}: {e}")
+                               self._stop_event.set()
+                               break
+                           # print(sum(line_total_data))
+                           try:
+                              
+                               current_line = px_filter(line_total_data)
+
+                               last_line = (line_idx == self.n_lines - 1)
+
+                               # Send to callbacks
+                               for callback in self._line_callbacks:
+                                   try:
+                                       if callback(current_line, line_idx, last_line):
+                                           self._stop_event.set()
+                                   except Exception as e:
+                                       logging.error(f"Callback error on line {line_idx}: {e}")
+
+                               # if self._stop_event.is_set():
+                               #       logger.info("Scan stopped by user request")
+                               #       break
+
+                           except Exception as e:
+                               logger.error(f"Processing error on line {line_idx}: {e}")
+                               self._stop_event.set()
+                               self._error_occurred  = True
+                               break
+                             # Darle tiempo a otros threads
+                       # Read and discard flyback samples at end of frame
+                       print("Volviendo al origen")
+                       if flyback_samples > 0:
+                           try:
+                               ci_task.read(
+                                   number_of_samples_per_channel=flyback_samples
+                               )
+                           except Exception as e:
+                               logger.warning(f"Flyback read skipped: {e}")
+                               self._error_occurred = True
+                   # Aca termino un frame y su flyback
+                       frame_count += 1
+                       logger.info(f"Completed frame {frame_count}")
+                   # End of NI-DAQ task
+               # End of frame processing
+           except Exception as e:
+               logger.error(f"Critical scan error: {e}", exc_info=True)
+               self._error_occurred = True
+               self._stop_event.set()
+               
+           
+
+       try:
+               with nidaqmx.Task() as ai_task:
+                   internal_read_channel_name_fast = "Dev1/_ao0_vs_aognd"
+                   internal_read_channel_name_slow = "Dev1/_ao1_vs_aognd"
+                   internal_read_channel_name_ao2 = "Dev1/_ao2_vs_aognd"
+                   ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_fast)
+                   if self.scan_params.scan_type in (scan_parameters.RegionScanType.XZ, scan_parameters.RegionScanType.YZ):
+                       ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_ao2)
+                       last_position_v = ai_task.read()
+                       last_position = [
+                           last_position_v[0] * fast_conv_inv,
+                           last_position_v[1] * slow_conv_inv,
+                       ]
+                   else:
+                       ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_slow)
+                       last_position_v = ai_task.read()
+                       last_position = [
+                           last_position_v[0] * fast_conv_inv,
+                           last_position_v[1] * slow_conv_inv,
+                       ]  
+              
+               fast_f = self.fast_back_v[-1]
+               slow_f = self.slow_back_v[-1]
+               print(fast_f, slow_f)
+               t_back, self.fast_back_V, self.slow_back_V, n_rel = generate_trajectory(
+                   last_position, 0, 0, self.scan_params.dwell_time * 1E-6, a_max_fast=self.acc, a_max_slow=self.acc
                )
                
-               # Start tasks in order (DO, AI, AO) so AI samples sync to AO clock
-               ai_task.start()
-               ao_task.start()
-
-               while not self._stop_event.is_set():
-                   logger.info("Arrancando scan (AI/PMT)")
-                   for line_idx, (start, end) in enumerate(self.line_indices):
-                       try:
-                           # Read voltages per sample for configured AI channels
-                           raw = ai_task.read(number_of_samples_per_channel=self.samples_per_line)
-                       except Exception as e:
-                           logger.error(f"AI read error on line {line_idx}: {e}")
-                           self._stop_event.set()
-                           break
-
-                       # Convert read result to 1D numpy voltages vector (choose first AI channel if multiple)
-                       arr = np.asarray(raw)
-                       # ai_task.read may return scalar, 1D or 2D depending on channels; flatten and pick channel 0 if needed
-                       if arr.ndim == 0:
-                           line_arr = np.atleast_1d(arr).astype(float)
-
-                       elif arr.ndim == 1:
-                           line_arr = arr.astype(float)
-
-                       else:
-                           # shape (n_channels, n_samples) or (n_samples, n_channels) — normalize to 1D samples for first channel
-                           # prefer (n_channels, n_samples)
-                           if arr.shape[0] >= 1 and arr.shape[1] == self.samples_per_line:
-                               line_arr = arr[0].astype(float)
-
-                           else:
-                               line_arr = arr.ravel().astype(float)
-
-
-                       # Now apply pixel filter (expects 1D line of length puntos_por_linea)
-                       try:
-                           current_line = px_filter(line_arr)
-                       except Exception as e:
-                           logger.error(f"Error filtering AI line {line_idx}: {e}")
-                           self._stop_event.set()
-                           break
-
-                       last_line = (line_idx == self.n_lines - 1)
-
-                       # Send voltages to callbacks (same API as counts)
-                       for callback in self._line_callbacks:
-                           try:
-                               if callback(current_line, line_idx, last_line):
-                                   self._stop_event.set()
-                           except Exception as e:
-                               logging.error(f"Callback error on AI line {line_idx}: {e}")
-
-                   # discard flyback samples if any
-                   if flyback_samples > 0:
-                       try:
-                           ai_task.read(number_of_samples_per_channel=flyback_samples)
-                       except Exception as e:
-                           logger.warning(f"AI flyback read skipped: {e}")
-                           self._error_occurred = True
-              
-
-        else:
-            
-            try:
-                frame_count = 0
-                marker_signal = np.zeros(self.frames_samples , dtype=bool)
-                samples_forward = self.true_px + 2*self.n_px_acc
-                marker_signal = np.zeros(self.frames_samples, dtype=bool)
-           
-                for start, end in self.line_indices:
-                   # índice de fin de la IDA dentro del bloque
-                   end_ida = start + samples_forward   # primer sample DESPUÉS de la ida
+               fast_back_v = self.fast_back_V * conv_fast * 1E6
+               slow_back_v = self.slow_back_V * conv_slow * 1E6
+               xy_back_signal = np.vstack((slow_back_v, fast_back_v))
                
-                   # 1er marker: inicio de IDA (pulso de 1 sample)
-                   marker_signal[start] = True
-                   marker_signal[end - 1] = True
-    
-                   # opcional pero recomendable para claridad:
-                   if start + 1 < self.frames_samples:
-                       marker_signal[start + 1] = False
+               print(xy_back_signal)
+               n_reloc_samples = len(self.fast_back_V)
+               print(fast_back_v)
+               print(slow_back_v)
                
-                   # 2º marker: fin de IDA (pulso de 1 sample)
-                   if end_ida < self.frames_samples:
-                       marker_signal[end_ida] = True
-                       if end_ida + 1 < self.frames_samples:
-                           marker_signal[end_ida + 1] = False
-    
-               
-                with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task, nidaqmx.Task() as do_task:
-                    xy_signal = np.vstack((self.volt_slow, self.volt_fast))
-                    # Configure analog
-                    self.channel_configuration_no_pulse(
-                        daq_acq_modes[1], ao_task, ci_task, xy_signal,
-                        self.frames_samples + flyback_samples, slow_chan, fast_chan
-                        )
-                    self.configure_marker_task(
-                            do_task,
-                            marker_signal,
-                            daq_acq_modes[1],
-                            self.frames_samples
-                        )
-                    # Arrancar los tasks de esta forma no debe sincronizarlos
-                    # Hacer algo parecido a esto
-                    # https://github.com/ni/nidaqmx-python/issues/162
-                    do_task.start()
-                    ci_task.start()
-                    ao_task.start()
-                    while not self._stop_event.is_set():
-                        # Process line by line
-                        logger.info("Arrancando scan")
-                        for line_idx, (start, end) in enumerate(self.line_indices):
-                            # Read line data
-                            try:
-                                line_total_data = ci_task.read(
-                                    number_of_samples_per_channel=self.samples_per_line
-                                )
-                            except Exception as e:  # nidaqmx.errors.DaqError
-                                logger.error(f"DAQ read error on line {line_idx}: {e}")
-                                self._stop_event.set()
-                                break
-                            # print(sum(line_total_data))
-                            try:
-                               
-                                current_line = px_filter(line_total_data)
-    
-                                last_line = (line_idx == self.n_lines - 1)
-    
-                                # Send to callbacks
-                                for callback in self._line_callbacks:
-                                    try:
-                                        if callback(current_line, line_idx, last_line):
-                                            self._stop_event.set()
-                                    except Exception as e:
-                                        logging.error(f"Callback error on line {line_idx}: {e}")
-    
-                                # if self._stop_event.is_set():
-                                #       logger.info("Scan stopped by user request")
-                                #       break
-    
-                            except Exception as e:
-                                logger.error(f"Processing error on line {line_idx}: {e}")
-                                self._stop_event.set()
-                                self._error_occurred  = True
-                                break
-                              # Darle tiempo a otros threads
-                        # Read and discard flyback samples at end of frame
-                        print("Volviendo al origen")
-                        if flyback_samples > 0:
-                            try:
-                                ci_task.read(
-                                    number_of_samples_per_channel=flyback_samples
-                                )
-                            except Exception as e:
-                                logger.warning(f"Flyback read skipped: {e}")
-                                self._error_occurred = True
-                    # Aca termino un frame y su flyback
-                        frame_count += 1
-                        logger.info(f"Completed frame {frame_count}")
-                    # End of NI-DAQ task
-                # End of frame processing
-            except Exception as e:
-                logger.error(f"Critical scan error: {e}", exc_info=True)
-                self._error_occurred = True
-                self._stop_event.set()
-                
-            
-    
-        try:
-                with nidaqmx.Task() as ai_task:
-                    internal_read_channel_name_fast = "Dev1/_ao0_vs_aognd"
-                    internal_read_channel_name_slow  = "Dev1/_ao1_vs_aognd"
-                    ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_fast)
-                    ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_slow)
-                    last_position_v = ai_task.read() 
-                    # last_position = last_position_v /(1E6*0.04)
-                    last_position = [
-                    last_position_v[0] / (1E6 * 0.04),  # fast channel
-                    last_position_v[1] / (1E6 * 0.04)   # slow channel    
-               ]
-                fast_f = self.fast_back_v[-1] 
-                slow_f = self.slow_back_v[-1]
-                #slow_f = 0
-                print(fast_f,slow_f)
-                t_back, self.fast_back_V, self.slow_back_V, n_rel  = generate_trajectory(
-            last_position, 0, 0, self.scan_params.dwell_time*1E-6, a_max_fast=self.acc, a_max_slow=self.acc
-                )
-                xy_back_signal = np.vstack((self.slow_back_V, self.fast_back_V))
-                xy_back_signal *= (1E6*0.04)
-                print(xy_back_signal)
-                n_reloc_samples = len(self.fast_back_V)
-                print(f"la vuelta tiene {n_rel}")
-                print(self.fast_back_V*(1E6*0.04))
-                print(self.slow_back_V*(1E6*0.04))
-
-                with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
-                    self.channel_configuration_no_pulse(
-                        daq_acq_modes[0], ao_task, ci_task, xy_back_signal,
-                        n_reloc_samples, slow_chan, fast_chan
-                        )
-                    ci_task.start()
-                    ao_task.start()
-                    # ao_task.write(xy_signal, auto_start=True)
-                    ci_task.read(
-                        number_of_samples_per_channel=n_reloc_samples)
-                logger.info("Relocación al cero completada correctamente.")
-        except Exception as e:
-                    logger.error(f"Error en relocación: {e}")
-                    self._stop_event.set()
-                    # return
-        logger.info("Scan completed successfully")
-        self._execute_scan_stop_callbacks()
-
+               with nidaqmx.Task() as ao_task, nidaqmx.Task() as ci_task:
+                   self.channel_configuration_no_pulse(
+                       daq_acq_modes[0], ao_task, ci_task, xy_back_signal,
+                       n_reloc_samples, slow_chan, fast_chan
+                   )
+                   ci_task.start()
+                   ao_task.start()
+                   ci_task.read(number_of_samples_per_channel=n_reloc_samples)
+               logger.info("Relocación al cero completada correctamente.")
+       except Exception as e:
+                   logger.error(f"Error en relocación: {e}")
+                   self._stop_event.set()
+                   # return
+       logger.info("Scan completed successfully")
+       self._execute_scan_stop_callbacks()
     
    
 
@@ -1061,10 +1086,13 @@ class NIDAQScan(BaseScan):
         z_offset_v = float(getattr(self, "z_offset_voltage", 5.0))
         vmax = float(self.config.max_voltage)
 
-        # aplicar offset (ya estás haciendo esto)
-        # volt_slow   = volt_slow + z_offset_v
-        # slow_rel_v  = slow_rel_v + z_offset_v
-        # slow_back_v = slow_back_v + z_offset_v
+        # aplicar offset 
+        if self.scan_params.scan_type == "XZ" or self.scan_params.scan_type == "YZ":
+            volt_slow   = volt_slow + z_offset_v
+            slow_rel_v  = slow_rel_v + z_offset_v
+            slow_back_v = slow_back_v + z_offset_v
+        else:
+            pass
         
         # log y clip
         logger.debug("slow volts before clip: min=%s max=%s", np.min(volt_slow), np.max(volt_slow))
@@ -1102,23 +1130,23 @@ class NIDAQScan(BaseScan):
         line_indices = [(i * samples_per_line, (i + 1) * samples_per_line) for i in range(n_lines)]
 
         # Esta parte grafica los voltajes generados. Mantener comentado a la hora de escanear.
-        # def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
-        #     fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
-        #     ax1.scatter(t, x,s = 8, color ="black")
-        #     ax1.set_ylabel("Posición X [V]")
-        #     ax1.set_title(titulo)
-        #     ax1.grid(True)
-        #     ax2.scatter(t, y,s = 8, color="black")
-        #     ax2.set_ylabel("Posición Y [V]")
-        #     ax2.set_xlabel("Tiempo [us]")
-        #     ax2.grid(True)
-        #     plt.tight_layout()
-        #     plt.show()
-        # if len(t_rel) > 1:
-        #       muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
-        # muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
-        # if len(t_back) > 1:
-        #           muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
+        def muestra_escaneo(titulo,t,x,y): #grafica lo que le mandamos a los espejos en voltaje
+            fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(8, 6), sharex=True)
+            ax1.scatter(t, x,s = 8, color ="black")
+            ax1.set_ylabel("Posición X [V]")
+            ax1.set_title(titulo)
+            ax1.grid(True)
+            ax2.scatter(t, y,s = 8, color="black")
+            ax2.set_ylabel("Posición Y [V]")
+            ax2.set_xlabel("Tiempo [us]")
+            ax2.grid(True)
+            plt.tight_layout()
+            plt.show()
+        if len(t_rel) > 1:
+              muestra_escaneo("Voltajes de recentrado",t_rel,fast_rel_v,slow_rel_v)
+        muestra_escaneo(f"Escaneo de {n_lines + 1} de escaneo", t, volt_fast, volt_slow)
+        if len(t_back) > 1:
+                  muestra_escaneo("Voltajes de vuelta al origen",t_back,fast_back_v,slow_back_v)
 
         # devolver/crear thread pasando solo señales slowa procesadas:
         return _NIDAQScanThread(
@@ -1186,31 +1214,50 @@ class NIDAQScan(BaseScan):
         target_slow_um = 10
     
         # current position in µm (fallback to 0)
-       
+        internal_read_channel_name_slow = "Dev1/_ao2_vs_aognd"
+
         fast_current_um, slow_current_um = 0.0, 0.0
     
         # dwell in µs and safe accelerations (µm/µs^2)
         dwell_us = 1000
         a_fast = 130
         a_slow = a_fast
-    
-        # generate smooth trajectory (arrays in µm, t in µs)
-        t_arr, fast_arr_um, slow_arr_um, n_pts = generate_trajectory(
-            (fast_current_um, slow_current_um),
-            fast_f=fast_current_um,
-            slow_f=target_slow_um,
-            dwell_time=dwell_us*1E-5,
-            a_max_fast=a_fast,
-            a_max_slow=a_slow,
-        )
+
+        try:
+            with nidaqmx.Task() as ai_task:  # vuelta a la posición de descanso
+                # FIXME: BUILD FROM SCAN DATA (ojo Z)
+                internal_read_channel_name_slow = "Dev1/_ao2_vs_aognd"
+                ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_slow)
+                last_position_v = ai_task.read()
+                #last_position = last_position_v /(1E6*0.04)
+                last_position = [
+              0,  # fast channel
+                last_position_v    # slow channel
+           ]
+                last_position = [
+                0,  # fast channel
+                last_position_v / ( 0.04)   # slow channel
+           ]
+                
+           
+            t_arr, fast_arr_um, slow_arr_um, n_pts = generate_trajectory(
+                last_position,
+                fast_f=0,
+                slow_f=target_slow_um,
+                dwell_time=dwell_us*1E-5,
+                a_max_fast=a_fast,
+                a_max_slow=a_slow,)
+        except Exception as e:
+            logger.error("Error performing smooth Z midpoint move: %s", e)
+            raise
     
         # convert slow axis to volts (V)
         volt_slow = slow_arr_um * conv
     
         # clip to safe range
         vmax = float(getattr(self.config, "max_voltage", 10.0))
-        volt_slow = np.clip(volt_slow, -vmax, vmax)
-        # plt.scatter(t_arr,volt_slow, color = "gray")
+        volt_slow_zero = np.clip(volt_slow, -vmax, vmax)
+        # plt.scatter(t_arr,volt_slow_zero, color = "gray")
         # plt.xlabel("Tiempo[s]")
         # plt.ylabel("Voltaje [V]")
         # plt.grid()
@@ -1250,7 +1297,6 @@ class NIDAQScan(BaseScan):
     
         # current position in µm (fallback to 0)
        
-        fast_current_um, slow_current_um = 0.0, 10
     
         # dwell in µs and safe accelerations (µm/µs^2)
         dwell_us = 1000
@@ -1258,14 +1304,41 @@ class NIDAQScan(BaseScan):
         a_slow = a_fast
     
         # generate smooth trajectory (arrays in µm, t in µs)
-        t_arr, fast_arr_um, slow_arr_um, n_pts = generate_trajectory(
-            (fast_current_um, slow_current_um),
-            fast_f=fast_current_um,
-            slow_f=0,
-            dwell_time=dwell_us*1E-5,
-            a_max_fast=a_fast,
-            a_max_slow=a_slow,
-        )
+        # t_arr, fast_arr_um, slow_arr_um, n_pts = generate_trajectory(
+        #     (fast_current_um, slow_current_um),
+        #     fast_f=fast_current_um,
+        #     slow_f=0,
+        #     dwell_time=dwell_us*1E-5,
+        #     a_max_fast=a_fast,
+        #     a_max_slow=a_slow,
+        # )
+        try:
+            with nidaqmx.Task() as ai_task:  # vuelta a la posición de descanso
+                # FIXME: BUILD FROM SCAN DATA (ojo Z)
+                internal_read_channel_name_slow = "Dev1/_ao2_vs_aognd"
+                ai_task.ai_channels.add_ai_voltage_chan(internal_read_channel_name_slow)
+                last_position_v = ai_task.read()
+                #last_position = last_position_v /(1E6*0.04)
+                last_position = [
+              0,  # fast channel
+                last_position_v    # slow channel
+           ]
+                last_position = [
+                0,  # fast channel
+                last_position_v / ( 0.04)   # slow channel
+           ]
+                
+           
+            t_arr, fast_arr_um, slow_arr_um, n_pts = generate_trajectory(
+                last_position,
+                fast_f=0,
+                slow_f=0,
+                dwell_time=dwell_us*1E-5,
+                a_max_fast=a_fast,
+                a_max_slow=a_slow,)
+        except Exception as e:
+            logger.error("Error performing smooth Z midpoint move: %s", e)
+            raise
     
         # convert slow axis to volts (V)
         volt_slow = slow_arr_um * conv
@@ -1288,7 +1361,12 @@ class NIDAQScan(BaseScan):
         except Exception as e:
             logger.error("Error performing smooth Z midpoint move: %s", e)
             raise
-    
+     
+        
+       
+        
+       
+        
         
      
 
